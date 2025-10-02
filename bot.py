@@ -220,7 +220,7 @@ async def handle_name_input(update: Update, context: ContextTypes.DEFAULT_TYPE) 
         }
     
     USER_APPLICATIONS[user_id]['name'] = name_input
-    USER_APPLICATIONS[user_id]['step'] = 'waiting_npu'
+    context.user_data['step'] = 'waiting_npu' # FIX: Update user_data context
     
     # Створюємо кнопки для вибору НПУ
     keyboard = []
@@ -255,6 +255,7 @@ async def select_npu_department(update: Update, context: ContextTypes.DEFAULT_TY
     # Зберігаємо вибір НПУ
     USER_APPLICATIONS[user_id]['npu_department'] = NPU_DEPARTMENTS[npu_code]
     USER_APPLICATIONS[user_id]['step'] = 'waiting_image_urls'
+    context.user_data['step'] = 'waiting_image_urls'
     
     await query.edit_message_text(
         f"✅ Управління НПУ обрано: {NPU_DEPARTMENTS[npu_code]}\n\n"
