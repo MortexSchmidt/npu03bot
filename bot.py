@@ -1,7 +1,9 @@
 
 import os
 import logging
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, InputMediaPhoto
+import re
+import requests
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CommandHandler, CallbackQueryHandler, ContextTypes, MessageHandler, filters
 
 # Налаштування логування
@@ -24,6 +26,52 @@ GROUP_INVITE_LINK = os.getenv("GROUP_INVITE_LINK", "")  # Додайте пос�
 # Стани користувача
 PENDING_REQUESTS = {}
 USER_APPLICATIONS = {}  # Зберігання даних заявок користувачів
+
+def is_valid_image_url(url: str) -> bool:
+    """Перевіряє, чи є URL валідним посиланням на зображення"""
+    # Базова перевірка формату URL
+    url_pattern = re.compile(
+        r'^https?://'  # http:// або https://
+        r'(?:(?:[A-Z0-9](?:[A-Z0-9-]{0,61}[A-Z0-9])?\.)+[A-Z]{2,6}\.?|'  # домен
+        r'localhost|'  # localhost
+        r'\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})'  # IP
+        r'(?::\d+)?'  # опціональний порт
+        r'(?:/?|[/?]\S+)$', re.IGNORECASE)
+    
+    if not url_pattern.match(url):
+        return False
+    
+    # Перевіряємо розширення файлу
+    image_extensions = ('.jpg', '.jpeg', '.png', '.gif', '.bmp', '.webp')
+    if any(url.lower().endswith(ext) for ext in image_extensions):
+        return True
+    
+    # Перевіряємо популярні хостинги зображень
+    image_hosts = ['imgbb.com', 'imgur.com', 'postimg.cc', 'ibb.co', 'imageban.ru', 'radikal.ru']
+    if any(host in url.lower() for host in image_hosts):
+        return True
+    
+    # Додаткова перевірка через HTTP HEAD запит
+    try:
+        response = requests.head(url, timeout=5)
+        content_type = response.headers.get('content-type', '')
+        return content_type.startswith('image/')
+    except:
+        return False
+
+def validate_image_urls(urls: list) -> tuple:
+    """Валідує список URL зображень"""
+    valid_urls = []
+    invalid_urls = []
+    
+    for url in urls:
+        url = url.strip()
+        if is_valid_image_url(url):
+            valid_urls.append(url)
+        else:
+            invalid_urls.append(url)
+    
+    return valid_urls, invalid_urls
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Обробник команди /start"""
@@ -64,6 +112,24 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         user_id = int(query.data.split("_")[1])
         await reject_request(update, context, user_id)
 
+async def handle_application_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Универсальный обработчик текстовых сообщений для заявок"""
+    user = update.effective_user
+    user_id = user.id
+    
+    # Если пользователь не в процессе подачи заявки
+    if not context.user_data.get('awaiting_application'):
+        return
+    
+    # Если это первое сообщение - обрабатываем как текст заявки
+    if user_id not in USER_APPLICATIONS:
+        await handle_text_application(update, context)
+    else:
+        user_data = USER_APPLICATIONS[user_id]
+        if user_data.get('step') == 'waiting_text':
+            await handle_text_application(update, context)
+        elif user_data.get('step') == 'waiting_image_urls':
+            await handle_image_urls_application(update, context)
 async def handle_text_application(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Обробник текстових заявок від користувачів"""
     if not context.user_data.get('awaiting_application'):
@@ -77,23 +143,29 @@ async def handle_text_application(update: Update, context: ContextTypes.DEFAULT_
         USER_APPLICATIONS[user_id] = {
             'user': user,
             'text': None,
-            'photos': [],
+            'image_urls': [],
             'step': 'waiting_text'
         }
 
     USER_APPLICATIONS[user_id]['text'] = update.message.text
-    USER_APPLICATIONS[user_id]['step'] = 'waiting_photos'
+    USER_APPLICATIONS[user_id]['step'] = 'waiting_image_urls'
 
     await update.message.reply_text(
         "✅ Текст заявки отримано!\n\n"
-        "Тепер надішліть скріншоти:\n"
+        "Тепер надішліть посилання на скріншоти:\n"
         "1. Скріншот посвідчення\n"
         "2. Скріншот планшету\n\n"
-        "Надішліть їх окремими повідомленнями або разом."
+        "📋 Інструкція:\n"
+        "• Завантажте скріншоти на imgbb.com, imgur.com або подібний сервіс\n"
+        "• Скопіюйте прямі посилання на зображення\n"
+        "• Надішліть їх одним повідомленням, кожне з нового рядка\n\n"
+        "Приклад:\n"
+        "https://i.ibb.co/example1.jpg\n"
+        "https://i.ibb.co/example2.png"
     )
 
-async def handle_photo_application(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Обробник фото для заявок"""
+async def handle_image_urls_application(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Обробник посилань на зображення для заявок"""
     user = update.effective_user
     user_id = user.id
 
@@ -113,31 +185,54 @@ async def handle_photo_application(update: Update, context: ContextTypes.DEFAULT
         return
 
     user_data = USER_APPLICATIONS[user_id]
+    
+    # Перевіряємо чи очікуємо посилання на зображення
+    if user_data.get('step') != 'waiting_image_urls':
+        await update.message.reply_text(
+            "❌ Будь ласка, спочатку введіть текст заявки."
+        )
+        return
 
-    # Додаємо фото до списку
-    if update.message.photo:
-        photo = update.message.photo[-1]  # Беремо фото найвищої якості
-        user_data['photos'].append(photo)
+    # Отримуємо текст повідомлення та розділяємо на рядки
+    message_text = update.message.text.strip()
+    urls = [url.strip() for url in message_text.split('\n') if url.strip()]
+    
+    if len(urls) < 2:
+        await update.message.reply_text(
+            "❌ Будь ласка, надішліть мінімум 2 посилання на зображення:\n"
+            "1. Скріншот посвідчення\n"
+            "2. Скріншот планшету\n\n"
+            "Кожне посилання з нового рядка."
+        )
+        return
+    
+    # Валідуємо URL
+    valid_urls, invalid_urls = validate_image_urls(urls)
+    
+    if invalid_urls:
+        invalid_list = '\n'.join(f"• {url}" for url in invalid_urls)
+        await update.message.reply_text(
+            f"❌ Деякі посилання некоректні:\n\n{invalid_list}\n\n"
+            "Будь ласка, перевірте посилання та надішліть тільки валідні URL зображень.\n"
+            "Підтримуються: imgbb.com, imgur.com, postimg.cc та інші."
+        )
+        return
+    
+    if len(valid_urls) < 2:
+        await update.message.reply_text(
+            "❌ Потрібно мінімум 2 валідних посилання на зображення.\n"
+            "Будь ласка, завантажте скріншоти на imgbb.com або imgur.com та надішліть прямі посилання."
+        )
+        return
 
-        current_count = len(user_data['photos'])
-        
-        # Перевіряємо чи є вже 2 фото
-        if current_count >= 2:
-            await finalize_application(update, context, user_id)
-        else:
-            photos_needed = 2 - current_count
-            await update.message.reply_text(
-                f"✅ Фото {current_count} з 2 отримано! Залишилось надіслати ще {photos_needed} фото."
-            )
+    # Зберігаємо посилання
+    user_data['image_urls'] = valid_urls
+    
+    await finalize_application(update, context, user_id)
 
-def get_photo_info(photo) -> str:
-    """Отримуємо інформацію про фото для адміністратора"""
-    file_id = photo.file_id
-    width = photo.width
-    height = photo.height
-    file_size = photo.file_size
-
-    return f"📷 Фото {width}x{height}, {file_size} bytes (ID: {file_id[:20]}...)"
+def get_image_info(url: str) -> str:
+    """Отримуємо інформацію про зображення для адміністратора"""
+    return f"� Посилання: {url}"
 
 async def finalize_application(update: Update, context: ContextTypes.DEFAULT_TYPE, user_id: int) -> None:
     """Завершуємо обробку заявки"""
@@ -148,14 +243,14 @@ async def finalize_application(update: Update, context: ContextTypes.DEFAULT_TYP
     PENDING_REQUESTS[user_id] = {
         'user': user,
         'application': user_data['text'],
-        'photos': user_data['photos']
+        'image_urls': user_data['image_urls']
     }
 
     # Відправляємо підтвердження користувачу
     await update.message.reply_text(
         "✅ Вашу заявку повністю отримано!\n\n"
         f"📝 Текст: отримано\n"
-        f"📷 Фото: {len(user_data['photos'])} з 2\n\n"
+        f"� Посилання на зображення: {len(user_data['image_urls'])}\n\n"
         "Очікуйте на розгляд адміністратором. "
         "Ви отримаєте повідомлення, коли заявку буде розглянуто."
     )
@@ -169,35 +264,20 @@ async def finalize_application(update: Update, context: ContextTypes.DEFAULT_TYP
     ]
     reply_markup = InlineKeyboardMarkup(keyboard)
 
+    # Формуємо список зображень для адміністратора
+    images_list = "\n".join([f"{i+1}. {url}" for i, url in enumerate(user_data['image_urls'])])
+
     admin_message = (
         "🆕 Нова заявка на доступ!\n\n"
         f"👤 Користувач: {user.first_name} {user.last_name or ''}\n"
         f"🆔 ID: {user.id}\n"
         f"📱 Нікнейм: @{user.username or 'немає'}\n\n"
         f"📝 Заявка:\n{user_data['text']}\n\n"
-        f"📷 Отримано {len(user_data['photos'])} скріншотів"
+        f"� Зображення ({len(user_data['image_urls'])}):\n{images_list}"
     )
 
     for admin_id in ADMIN_IDS:
         try:
-            # Створюємо медіагрупу з фото
-            if user_data['photos']:
-                media_group = []
-                for i, photo in enumerate(user_data['photos']):
-                    caption = f"Скріншот {i+1} від {user.first_name} ({user.id})" if i == 0 else f"Скріншот {i+1}"
-                    media_group.append(
-                        InputMediaPhoto(
-                            media=photo.file_id,
-                            caption=caption
-                        )
-                    )
-
-                # Надсилаємо медіагрупу
-                await context.bot.send_media_group(
-                    chat_id=admin_id,
-                    media=media_group
-                )
-
             # Надсилаємо текстове повідомлення з кнопками
             await context.bot.send_message(
                 chat_id=admin_id,
@@ -310,8 +390,7 @@ def main() -> None:
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CommandHandler("admin", admin_command))
     application.add_handler(CallbackQueryHandler(button_handler))
-    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text_application))
-    application.add_handler(MessageHandler(filters.PHOTO, handle_photo_application))
+    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_application_text))
     
     # Запускаємо бота
     logger.info("Бот запущено!")
