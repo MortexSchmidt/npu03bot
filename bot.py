@@ -448,7 +448,22 @@ def main() -> None:
     
     # Запускаємо бота
     logger.info("Бот запущено!")
-    application.run_polling(allowed_updates=Update.ALL_TYPES)
+    
+    # Додаємо обробку помилок для конфліктів
+    async def error_handler(update, context):
+        logger.error(f"Помилка оброблена: {context.error}")
+    
+    application.add_error_handler(error_handler)
+    
+    # Запускаємо з обробкою конфліктів
+    try:
+        application.run_polling(
+            allowed_updates=Update.ALL_TYPES,
+            drop_pending_updates=True  # Ігноруємо старі повідомлення
+        )
+    except Exception as e:
+        logger.error(f"Критична помилка при запуску: {e}")
+        raise
 
 if __name__ == '__main__':
     main()
