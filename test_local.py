@@ -1,4 +1,3 @@
-import os
 import logging
 import re
 import requests
@@ -12,48 +11,16 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# Конфігурація
-BOT_TOKEN = os.getenv("BOT_TOKEN")
-if not BOT_TOKEN:
-    raise ValueError("Не знайдено змінну оточення BOT_TOKEN. Перевірте налаштування на хостингу.")
-
-ADMIN_IDS_STR = os.getenv("ADMIN_IDS", "1648720935")
-ADMIN_IDS = [int(admin_id.strip()) for admin_id in ADMIN_IDS_STR.split(',')]
-
-GROUP_CHAT_ID = os.getenv("GROUP_CHAT_ID")  # ID групи для створення запрошень
-GROUP_INVITE_LINK = "https://t.me/+RItcaiRa-KU5ZThi"  # Основна ссылка (резервна)
+# Конфігурація для локального тестування
+# ВАЖЛИВО: НЕ ВИКОРИСТОВУЙТЕ ЦЕ НА ПРОДАКШЕНІ!
+BOT_TOKEN = "7652276422:AAGC-z7Joic3m7cFKXVdafvKvaqTZ3VZsBo"  # Ваш токен для тестування
+ADMIN_IDS = [1648720935]  # Ваш ID адміністратора
+GROUP_CHAT_ID = None  # Для локального тесту - отключено создание ссылок
+GROUP_INVITE_LINK = "https://t.me/+RItcaiRa-KU5ZThi"  # Основна ссылка для тестів
 
 # Стани користувача
 PENDING_REQUESTS = {}
 USER_APPLICATIONS = {}  # Зберігання даних заявок користувачів
-
-# Доступні управління НПУ
-NPU_DEPARTMENTS = {
-    "dnipro": "🏛️ Управління НПУ в Дніпрі",
-    "kharkiv": "🏛️ Управління НПУ в Харкові", 
-    "kyiv": "🏛️ Управління НПУ в Києві"
-}
-
-def is_ukrainian_name(text: str) -> bool:
-    """Перевіряє, чи містить текст українські ім'я та прізвище"""
-    # Українські літери
-    ukrainian_pattern = re.compile(r'^[А-ЯІЇЄа-яіїє\'\-\s]+$', re.UNICODE)
-    
-    # Перевіряємо базовий формат
-    if not ukrainian_pattern.match(text.strip()):
-        return False
-    
-    # Розділяємо на слова та перевіряємо що є мінімум 2 слова (ім'я та прізвище)
-    words = text.strip().split()
-    if len(words) < 2:
-        return False
-    
-    # Перевіряємо що кожне слово має мінімум 2 символи
-    for word in words:
-        if len(word) < 2:
-            return False
-    
-    return True
 
 def is_valid_image_url(url: str) -> bool:
     """Перевіряє, чи є URL валідним посиланням на зображення"""
@@ -102,28 +69,10 @@ def validate_image_urls(urls: list) -> tuple:
     return valid_urls, invalid_urls
 
 async def create_invite_link(context: ContextTypes.DEFAULT_TYPE, user_name: str) -> str:
-    """Створює одноразове посилання-запрошення для користувача"""
-    try:
-        # Якщо є ID групи, створюємо одноразове посилання
-        if GROUP_CHAT_ID:
-            # Створюємо запрошення, що діє 24 години та може використати тільки 1 людина
-            invite_link = await context.bot.create_chat_invite_link(
-                chat_id=GROUP_CHAT_ID,
-                name=f"Запрошення для {user_name}",
-                expire_date=None,  # Без обмеження по часу, але з лімітом використань
-                member_limit=1,  # Тільки одна людина може використати
-                creates_join_request=False  # Прямий вступ без запиту
-            )
-            logger.info(f"Створено одноразове посилання для {user_name}: {invite_link.invite_link}")
-            return invite_link.invite_link
-        else:
-            # Якщо немає ID групи, використовуємо основну ссылку
-            logger.warning("GROUP_CHAT_ID не налаштовано, використовуємо основну ссылку")
-            return GROUP_INVITE_LINK
-    except Exception as e:
-        logger.error(f"Помилка при створенні посилання-запрошення: {e}")
-        # В разі помилки використовуємо основну ссылку
-        return GROUP_INVITE_LINK
+    """Створює одноразове посилання-запрошення для користувача (ТЕСТ РЕЖИМ)"""
+    # В локальному тесті не створюємо реальні посилання
+    logger.info(f"[ТЕСТ] Створено б одноразове посилання для {user_name}")
+    return GROUP_INVITE_LINK
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Обробник команди /start"""
@@ -137,7 +86,8 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     welcome_message = (
         f"Вітаю, {user.first_name}! 👋\n\n"
         "Це бот для отримання доступу до групи поліції UKRAINE GTA.\n\n"
-        "Щоб отримати доступ до групи, натисніть кнопку нижче та заповніть заявку."
+        "Щоб отримати доступ до групи, натисніть кнопку нижче та заповніть заявку.\n\n"
+        "🔧 ЛОКАЛЬНИЙ ТЕСТ РЕЖИМ"
     )
     
     await update.message.reply_text(welcome_message, reply_markup=reply_markup)
@@ -149,19 +99,12 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     
     if query.data == "request_access":
         await query.edit_message_text(
-            "📝 Крок 1: Введіть ваше ім'я та прізвище\n\n"
-            "⚠️ ВАЖЛИВО:\n"
-            "• Тільки українською мовою\n"
-            "• Повне ім'я та прізвище\n"
-            "• Без скорочень та абревіатур\n\n"
-            "Приклад: Іван Петренко"
+            "📝 Будь ласка, надішліть наступну інформацію:\n\n"
+            "1. Ваше ім'я та прізвище\n"
+            "2. НПУ міста\n\n"
+            "Надішліть текст одним повідомленням."
         )
         context.user_data['awaiting_application'] = True
-        context.user_data['step'] = 'waiting_name'
-    
-    elif query.data.startswith("npu_"):
-        npu_code = query.data.split("_")[1]
-        await select_npu_department(update, context, npu_code)
     
     elif query.data.startswith("approve_"):
         user_id = int(query.data.split("_")[1])
@@ -172,94 +115,47 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         await reject_request(update, context, user_id)
 
 async def handle_application_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Універсальний обробник текстових повідомлень для заявок"""
+    """Универсальный обработчик текстовых сообщений для заявок"""
     user = update.effective_user
     user_id = user.id
     
-    # Якщо користувач не в процесі подачі заявки
+    # Если пользователь не в процессе подачи заявки
     if not context.user_data.get('awaiting_application'):
         return
     
-    step = context.user_data.get('step', 'waiting_name')
-    
-    if step == 'waiting_name':
-        await handle_name_input(update, context)
-    elif step == 'waiting_image_urls':
-        await handle_image_urls_application(update, context)
+    # Если это первое сообщение - обрабатываем как текст заявки
+    if user_id not in USER_APPLICATIONS:
+        await handle_text_application(update, context)
+    else:
+        user_data = USER_APPLICATIONS[user_id]
+        if user_data.get('step') == 'waiting_text':
+            await handle_text_application(update, context)
+        elif user_data.get('step') == 'waiting_image_urls':
+            await handle_image_urls_application(update, context)
 
-async def handle_name_input(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Обробник введення імені та прізвища"""
+async def handle_text_application(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Обробник текстових заявок від користувачів"""
+    if not context.user_data.get('awaiting_application'):
+        return
+
     user = update.effective_user
     user_id = user.id
-    name_input = update.message.text.strip()
-    
-    # Перевіряємо чи ім'я українською
-    if not is_ukrainian_name(name_input):
-        await update.message.reply_text(
-            "❌ Ім'я та прізвище мають бути українською мовою!\n\n"
-            "Приклади правильного формату:\n"
-            "✅ Олександр Іваненко\n"
-            "✅ Марія Петренко-Коваленко\n"
-            "✅ Анна-Марія Сидоренко\n\n"
-            "❌ НЕправильно:\n"
-            "• Alexander Ivanov (англійською)\n"
-            "• Олександр І. (скорочення)\n"
-            "• Саша (неповне ім'я)\n\n"
-            "Спробуйте ще раз:"
-        )
-        return
-    
-    # Зберігаємо ім'я та показуємо вибір НПУ
+
+    # Ініціалізуємо дані користувача, якщо ще не існує
     if user_id not in USER_APPLICATIONS:
         USER_APPLICATIONS[user_id] = {
             'user': user,
-            'name': None,
-            'npu_department': None,
+            'text': None,
             'image_urls': [],
-            'step': 'waiting_name'
+            'step': 'waiting_text'
         }
-    
-    USER_APPLICATIONS[user_id]['name'] = name_input
-    USER_APPLICATIONS[user_id]['step'] = 'waiting_npu'
-    
-    # Створюємо кнопки для вибору НПУ
-    keyboard = []
-    for code, title in NPU_DEPARTMENTS.items():
-        keyboard.append([InlineKeyboardButton(title, callback_data=f"npu_{code}")])
-    
-    reply_markup = InlineKeyboardMarkup(keyboard)
-    
-    await update.message.reply_text(
-        f"✅ Ім'я прийнято: {name_input}\n\n"
-        "📝 Крок 2: Оберіть ваше управління НПУ\n\n"
-        "⚠️ Доступні тільки ці управління для UKRAINE GTA:",
-        reply_markup=reply_markup
-    )
 
-async def select_npu_department(update: Update, context: ContextTypes.DEFAULT_TYPE, npu_code: str) -> None:
-    """Обробник вибору управління НПУ"""
-    query = update.callback_query
-    await query.answer()
-    
-    user = update.effective_user
-    user_id = user.id
-    
-    if user_id not in USER_APPLICATIONS:
-        await query.edit_message_text("❌ Помилка: дані заявки не знайдено. Почніть спочатку з /start")
-        return
-    
-    if npu_code not in NPU_DEPARTMENTS:
-        await query.edit_message_text("❌ Помилка: невідоме управління НПУ")
-        return
-    
-    # Зберігаємо вибір НПУ
-    USER_APPLICATIONS[user_id]['npu_department'] = NPU_DEPARTMENTS[npu_code]
+    USER_APPLICATIONS[user_id]['text'] = update.message.text
     USER_APPLICATIONS[user_id]['step'] = 'waiting_image_urls'
-    
-    await query.edit_message_text(
-        f"✅ Управління НПУ обрано: {NPU_DEPARTMENTS[npu_code]}\n\n"
-        "📝 Крок 3: Надішліть посилання на скріншоти\n\n"
-        "Потрібні документи:\n"
+
+    await update.message.reply_text(
+        "✅ Текст заявки отримано!\n\n"
+        "Тепер надішліть посилання на скріншоти:\n"
         "1. Скріншот посвідчення\n"
         "2. Скріншот планшету\n\n"
         "📋 Інструкція:\n"
@@ -349,16 +245,14 @@ async def finalize_application(update: Update, context: ContextTypes.DEFAULT_TYP
     # Створюємо заявку для обробки
     PENDING_REQUESTS[user_id] = {
         'user': user,
-        'name': user_data['name'],
-        'npu_department': user_data['npu_department'],
+        'application': user_data['text'],
         'image_urls': user_data['image_urls']
     }
 
     # Відправляємо підтвердження користувачу
     await update.message.reply_text(
         "✅ Вашу заявку повністю отримано!\n\n"
-        f"👤 Ім'я: {user_data['name']}\n"
-        f"🏛️ НПУ: {user_data['npu_department']}\n"
+        f"📝 Текст: отримано\n"
         f"🔗 Посилання на зображення: {len(user_data['image_urls'])}\n\n"
         "Очікуйте на розгляд адміністратором. "
         "Ви отримаєте повідомлення, коли заявку буде розглянуто."
@@ -377,13 +271,11 @@ async def finalize_application(update: Update, context: ContextTypes.DEFAULT_TYP
     images_list = "\n".join([f"{i+1}. {url}" for i, url in enumerate(user_data['image_urls'])])
 
     admin_message = (
-        "🆕 Нова заявка на доступ!\n\n"
+        "🆕 Нова заявка на доступ! (ЛОКАЛЬНИЙ ТЕСТ)\n\n"
         f"👤 Користувач: {user.first_name} {user.last_name or ''}\n"
         f"🆔 ID: {user.id}\n"
         f"📱 Нікнейм: @{user.username or 'немає'}\n\n"
-        f"📝 Заявка:\n"
-        f"👤 Ім'я: {user_data['name']}\n"
-        f"🏛️ НПУ: {user_data['npu_department']}\n\n"
+        f"📝 Заявка:\n{user_data['text']}\n\n"
         f"🔗 Зображення ({len(user_data['image_urls'])}):\n{images_list}"
     )
 
@@ -413,7 +305,7 @@ async def approve_request(update: Update, context: ContextTypes.DEFAULT_TYPE, us
     user_data = PENDING_REQUESTS[user_id]
     user = user_data['user']
     
-    # Створюємо індивідуальне одноразове посилання
+    # Створюємо індивідуальне одноразове посилання (в тесті - імітація)
     try:
         user_display_name = f"{user.first_name} {user.last_name or ''}".strip()
         if user.username:
@@ -423,14 +315,15 @@ async def approve_request(update: Update, context: ContextTypes.DEFAULT_TYPE, us
         
         # Відправляємо персональне посилання користувачу
         invite_message = (
-            "🎉 Вітаємо!\n\n"
+            "🎉 Вітаємо! (ЛОКАЛЬНИЙ ТЕСТ)\n\n"
             "Вашу заявку схвалено! Ви отримали персональне запрошення до групи поліції UKRAINE GTA.\n\n"
             f"🔗 Ваше особисте посилання:\n{invite_link}\n\n"
-            "⚠️ ВАЖЛИВО:\n"
+            "⚠️ ВАЖЛИВО (в реальній версії):\n"
             "• Це посилання створено спеціально для вас\n"
             "• Воно одноразове - може використати тільки одна людина\n"
             "• Не передавайте його іншим\n"
-            "• Після вступу посилання стане недійсним"
+            "• Після вступу посилання стане недійсним\n\n"
+            "🔧 ТЕСТ: В реальній версії буде створено унікальне посилання"
         )
         
         await context.bot.send_message(
@@ -440,35 +333,20 @@ async def approve_request(update: Update, context: ContextTypes.DEFAULT_TYPE, us
         
         # Повідомляємо адміністратору про успіх
         await query.edit_message_text(
-            f"✅ Заявку користувача {user.first_name} ({user.id}) схвалено!\n\n"
+            f"✅ Заявку користувача {user.first_name} ({user.id}) схвалено! (ТЕСТ)\n\n"
             f"👤 Користувач: {user_display_name}\n"
-            f"🔗 Створено персональне посилання: {invite_link[:50]}...\n"
+            f"🔗 В реальній версії створено б персональне посилання\n"
             f"📊 Ліміт використань: 1 раз\n\n"
-            f"Користувачу надіслано персональне запрошення."
+            f"Користувачу надіслано тестове повідомлення."
         )
         
-        logger.info(f"Заявку користувача {user_display_name} ({user.id}) схвалено, створено посилання: {invite_link}")
+        logger.info(f"[ТЕСТ] Заявку користувача {user_display_name} ({user.id}) схвалено")
         
     except Exception as e:
         logger.error(f"Помилка при схваленні заявки користувача {user.id}: {e}")
         await query.edit_message_text(
-            f"⚠️ Заявку схвалено, але виникла помилка при створенні персонального посилання.\n"
-            f"Помилка: {str(e)}\n\n"
-            f"Користувачу надіслано основне посилання на групу."
+            f"⚠️ Помилка в тесті: {str(e)}"
         )
-        
-        # Відправляємо основне посилання як резерв
-        try:
-            await context.bot.send_message(
-                chat_id=user_id,
-                text=(
-                    "🎉 Вітаємо!\n\n"
-                    "Вашу заявку схвалено! Ви можете приєднатися до групи за основним посиланням:\n\n"
-                    f"🔗 {GROUP_INVITE_LINK}"
-                )
-            )
-        except Exception as e2:
-            logger.error(f"Не вдалося відправити навіть основне посилання користувачу {user.id}: {e2}")
     
     # Видаляємо заявку зі списку очікування
     del PENDING_REQUESTS[user_id]
@@ -517,12 +395,17 @@ async def admin_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     
     pending_count = len(PENDING_REQUESTS)
     await update.message.reply_text(
-        f"📊 Статистика:\n\n"
+        f"📊 Статистика (ЛОКАЛЬНИЙ ТЕСТ):\n\n"
         f"Заявок в очікуванні: {pending_count}"
     )
 
 def main() -> None:
     """Запуск бота"""
+    print("🔧 ЗАПУСК ЛОКАЛЬНОГО ТЕСТУ БОТА")
+    print(f"🤖 Токен: {BOT_TOKEN[:10]}...")
+    print(f"👮 Адміни: {ADMIN_IDS}")
+    print("=" * 50)
+    
     # Створюємо додаток
     application = Application.builder().token(BOT_TOKEN).build()
     
@@ -533,23 +416,9 @@ def main() -> None:
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_application_text))
     
     # Запускаємо бота
-    logger.info("Бот запущено!")
-    
-    # Додаємо обробку помилок для конфліктів
-    async def error_handler(update, context):
-        logger.error(f"Помилка оброблена: {context.error}")
-    
-    application.add_error_handler(error_handler)
-    
-    # Запускаємо з обробкою конфліктів
-    try:
-        application.run_polling(
-            allowed_updates=Update.ALL_TYPES,
-            drop_pending_updates=True  # Ігноруємо старі повідомлення
-        )
-    except Exception as e:
-        logger.error(f"Критична помилка при запуску: {e}")
-        raise
+    logger.info("🔧 Локальний тест бота запущено!")
+    print("🔧 Локальний тест бота запущено! Натисніть Ctrl+C для зупинки.")
+    application.run_polling(allowed_updates=Update.ALL_TYPES)
 
 if __name__ == '__main__':
     main()
