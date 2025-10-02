@@ -1,4 +1,5 @@
 
+import os
 import logging
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, InputMediaPhoto
 from telegram.ext import Application, CommandHandler, CallbackQueryHandler, ContextTypes, MessageHandler, filters
@@ -11,9 +12,14 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 # Конфігурація
-BOT_TOKEN = "7652276422:AAGC-z7Joic3m7cFKXVdafvKvaqTZ3VZsBo"
-ADMIN_IDS = [1648720935]  # Додайте ID адміністраторів, наприклад: [123456789, 987654321]
-GROUP_INVITE_LINK = ""  # Додайте посилання на групу
+BOT_TOKEN = os.getenv("BOT_TOKEN")
+if not BOT_TOKEN:
+    raise ValueError("Не знайдено змінну оточення BOT_TOKEN. Перевірте налаштування на хостингу.")
+
+ADMIN_IDS_STR = os.getenv("ADMIN_IDS", "1648720935")
+ADMIN_IDS = [int(admin_id.strip()) for admin_id in ADMIN_IDS_STR.split(',')]
+
+GROUP_INVITE_LINK = os.getenv("GROUP_INVITE_LINK", "")  # Додайте посилання на групу
 
 # Стани користувача
 PENDING_REQUESTS = {}
