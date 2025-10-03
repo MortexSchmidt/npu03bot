@@ -12,6 +12,7 @@ from telegram.ext import (
     filters,
     ConversationHandler,
 )
+from db import init_db, upsert_profile, update_profile_fields, get_profile
 
 # Налаштування логування
 logging.basicConfig(
@@ -184,6 +185,15 @@ async def create_invite_link(context: ContextTypes.DEFAULT_TYPE, user_name: str)
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Обробник команди /start: різна поведінка для членів групи та тих, хто ще не в групі"""
     user = update.effective_user
+
+    # Оновлюємо профіль користувача в БД (TG дані)
+    tg_fullname = f"{user.first_name or ''} {user.last_name or ''}".strip()
+    upsert_profile(
+        telegram_id=user.id,
+        username=user.username or None,
+        full_name_tg=tg_fullname or None,
+        role='admin' if user.id in ADMIN_IDS else 'user',
+    )
 
     # Перевірка членства у групі
     user_is_member = False
@@ -422,6 +432,11 @@ async def neaktyv_to(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     
     context.user_data["neaktyv_form"]["to_whom"] = name
     context.user_data["neaktyv_form"]["rank"] = rank
+    # Якщо це сам користувач — оновимо звання у профілі
+    if update.effective_user and update.effective_user.id:
+        # Не завжди доречно, але якщо користувач вказав звання про себе — збережемо
+        if rank:
+            update_profile_fields(update.effective_user.id, rank=rank)
     await update.message.reply_text(
         "🔸 Крок 2 з 3: Термін неактиву\n\n"
         "Введіть термін неактиву:\n"
@@ -740,6 +755,8 @@ async def handle_name_input(update: Update, context: ContextTypes.DEFAULT_TYPE) 
         }
     
     USER_APPLICATIONS[user_id]['name'] = name_input
+    # Зберігаємо ім'я у грі в профіль
+    update_profile_fields(user_id, in_game_name=name_input)
     context.user_data['step'] = 'waiting_npu' # FIX: Update user_data context
     
     # Створюємо кнопки для вибору НПУ
@@ -774,6 +791,8 @@ async def select_npu_department(update: Update, context: ContextTypes.DEFAULT_TY
     
     # Зберігаємо вибір НПУ
     USER_APPLICATIONS[user_id]['npu_department'] = NPU_DEPARTMENTS[npu_code]
+    # Оновлюємо підрозділ у профілі
+    update_profile_fields(user_id, npu_department=NPU_DEPARTMENTS[npu_code])
     USER_APPLICATIONS[user_id]['step'] = 'waiting_image_urls'
     context.user_data['step'] = 'waiting_image_urls'
     
@@ -1049,13 +1068,34 @@ async def admin_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         f"Заявок в очікуванні: {pending_count}"
     )
 
+async def me_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Показати збережений профіль користувача."""
+    user = update.effective_user
+    profile = get_profile(user.id)
+    if not profile:
+        await update.message.reply_text("ℹ️ Профіль ще не збережено. Натисніть /start і спробуйте знову.")
+        return
+    text = (
+        "👤 <b>Ваш профіль</b>\n\n"
+        f"TG: @{profile['username'] or 'немає'}\n"
+        f"Ім'я в Telegram: {profile['full_name_tg'] or '—'}\n"
+        f"Ім'я у грі: {profile['in_game_name'] or '—'}\n"
+        f"Звання: {profile['rank'] or '—'}\n"
+        f"Підрозділ: {profile['npu_department'] or '—'}\n"
+        f"Роль: {profile['role'] or 'user'}\n"
+    )
+    await update.message.reply_text(text, parse_mode="HTML")
+
 def main() -> None:
     """Запуск бота"""
     # Створюємо додаток
     application = Application.builder().token(BOT_TOKEN).build()
+    # Ініціалізуємо БД
+    init_db()
     
     # Додаємо обробники
     application.add_handler(CommandHandler("start", start))
+    application.add_handler(CommandHandler("me", me_command))
     application.add_handler(CommandHandler("admin", admin_command))
 
     # Попередньо обробляємо вибір покарання (inline) до загального кнопкового хендлера
