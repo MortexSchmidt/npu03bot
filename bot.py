@@ -1651,7 +1651,7 @@ def main() -> None:
     # Попередньо обробляємо вибір покарання (inline) до загального кнопкового хендлера
     application.add_handler(CallbackQueryHandler(dogana_punish_selected, pattern=r"^dogana_punish_"))
     # Ограничиваем общий обработчик кнопок, чтобы не перехватывать approve_neaktyv_/reject_neaktyv_
-    application.add_handler(CallbackQueryHandler(button_handler, pattern=r"^(request_access|npu_.+|approve_\d+|reject_\d+)$"))
+    application.add_handler(CallbackQueryHandler(button_handler, pattern=r"^(request_access|npu_.+|rank_\d+|approve_\d+|reject_\d+)$"))
 
     # Діалоги: Догани (адміністраторам)
     dogana_conv = ConversationHandler(
