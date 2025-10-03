@@ -337,7 +337,7 @@ async def dogana_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> i
 # ЗАЯВИ НА НЕАКТИВ (усі користувачі)
 ############################
 
-NEAKTYV_TO, NEAKTYV_BY, NEAKTYV_TIME, NEAKTYV_DEPARTMENT = range(4)
+NEAKTYV_TO, NEAKTYV_TIME, NEAKTYV_DEPARTMENT = range(3)
 
 # Константи для модерації заяв
 NEAKTYV_APPROVAL_NAME = range(1)
@@ -346,7 +346,7 @@ async def neaktyv_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> i
     context.user_data["neaktyv_form"] = {}
     await update.message.reply_text(
         "📝 ПОДАЧА ЗАЯВИ НА НЕАКТИВ\n\n"
-        "🔸 Крок 1 з 4: Отримувач\n\n"
+        "🔸 Крок 1 з 3: Отримувач\n\n"
         "Введіть ім'я та прізвище особи, якій надається неактив:\n"
         "(Українською мовою, повне ім'я та прізвище)",
         reply_markup=ReplyKeyboardRemove()
@@ -374,34 +374,7 @@ async def neaktyv_to(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     
     context.user_data["neaktyv_form"]["to_whom"] = name
     await update.message.reply_text(
-        "🔸 Крок 2 з 4: Видавець\n\n"
-        "Введіть ім'я та прізвище особи, що надає неактив:\n"
-        "(Українською мовою, повне ім'я та прізвище)"
-    )
-    return NEAKTYV_BY
-
-async def neaktyv_by(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    name = update.message.text.strip()
-    
-    # Валідація українського імені
-    if not re.match(r'^[А-ЯҐІЇЄЁ][а-яґіїєё\']*\s+[А-ЯҐІЇЄЁ][а-яґіїєё\']*$', name):
-        await update.message.reply_text(
-            "❌ Помилка введення!\n\n"
-            "Ім'я та прізвище повинні:\n"
-            "• Бути українською мовою\n"
-            "• Починатися з великих літер\n"
-            "• Містити лише літери українського алфавіту\n\n"
-            "Приклади правильного введення:\n"
-            "✅ Олексій Петренко\n"
-            "✅ Марія Коваленко\n"
-            "✅ Дмитро О'Коннор\n\n"
-            "Спробуйте ще раз:"
-        )
-        return NEAKTYV_BY
-    
-    context.user_data["neaktyv_form"]["by_whom"] = name
-    await update.message.reply_text(
-        "🔸 Крок 3 з 4: Термін неактиву\n\n"
+        "🔸 Крок 2 з 3: Термін неактиву\n\n"
         "Введіть термін неактиву:\n"
         "(Наприклад: 2 тижні, 1 місяць, 3 дні)"
     )
@@ -410,7 +383,7 @@ async def neaktyv_by(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
 async def neaktyv_time(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     context.user_data["neaktyv_form"]["duration"] = update.message.text.strip()
     await update.message.reply_text(
-        "🔸 Крок 4 з 4: Відділ\n\n"
+        "🔸 Крок 3 з 3: Відділ\n\n"
         "Оберіть відділ НПУ:",
         reply_markup=ReplyKeyboardMarkup(
             [[dept] for dept in NPU_DEPARTMENTS.keys()],
@@ -433,9 +406,8 @@ async def neaktyv_dept(update: Update, context: ContextTypes.DEFAULT_TYPE) -> in
     admin_message = (
         "� НОВА ЗАЯВА НА НЕАКТИВ\n\n"
         f"1. Кому надається: {form.get('to_whom')}\n"
-        f"2. Хто надав: {form.get('by_whom')}\n"
-        f"3. На скільки (час): {form.get('duration')}\n"
-        f"4. Підрозділ: {form.get('department')}\n\n"
+        f"2. На скільки (час): {form.get('duration')}\n"
+        f"3. Підрозділ: {form.get('department')}\n\n"
         f"Від: {author}\n"
         f"ID заявника: {user_id}"
     )
@@ -539,6 +511,7 @@ async def process_neaktyv_approval_name(update: Update, context: ContextTypes.DE
     
     action = context.user_data.get("moderation_action")
     user_id = context.user_data.get("moderation_user_id")
+    original_message_id = context.user_data.get("original_message_id")
     
     # Отримуємо збережені дані заяви
     form_key = f"neaktyv_form_{user_id}"
@@ -549,31 +522,66 @@ async def process_neaktyv_approval_name(update: Update, context: ContextTypes.DE
         return ConversationHandler.END
     
     if action == "approve":
-        # Одобрення - публікуємо в групу
+        # Одобрення - редагуємо повідомлення адміністратора та публікуємо в групу
+        admin_edit_message = (
+            "✅ ЗАЯВА ОДОБРЕНА\n\n"
+            f"1. Кому надається: {form.get('to_whom')}\n"
+            f"2. На скільки (час): {form.get('duration')}\n"
+            f"3. Підрозділ: {form.get('department')}\n\n"
+            f"Від: {form.get('author')}\n"
+            f"Модератор: {name}"
+        )
+        
         group_message = (
             "🟦 ЗАЯВА НА НЕАКТИВ\n\n"
             f"1. Кому надається: {form.get('to_whom')}\n"
-            f"2. Хто надав: {form.get('by_whom')}\n"
-            f"3. На скільки (час): {form.get('duration')}\n"
-            f"4. Підрозділ: {form.get('department')}\n\n"
+            f"2. На скільки (час): {form.get('duration')}\n"
+            f"3. Підрозділ: {form.get('department')}\n\n"
             f"Від: {form.get('author')}\n"
             f"Перевіряючий: {name}"
         )
         
         try:
+            # Редагуємо оригінальне повідомлення адміністратора
+            await context.bot.edit_message_text(
+                chat_id=update.effective_chat.id,
+                message_id=original_message_id,
+                text=admin_edit_message
+            )
+            
+            # Публікуємо в групу
             await context.bot.send_message(
                 chat_id=REPORTS_CHAT_ID,
                 text=group_message,
                 message_thread_id=AFK_TOPIC_ID,
                 parse_mode="Markdown"
             )
-            await update.message.reply_text(f"✅ Заяву одобрено та опубліковано в групі!\nМодератор: {name}")
+            await update.message.reply_text(f"✅ Заяву одобрено та опубліковано в групі!")
         except Exception as e:
-            logger.error(f"Помилка при публікації заяви в групу: {e}")
-            await update.message.reply_text("❌ Помилка при публікації в групу.")
+            logger.error(f"Помилка при обробці заяви: {e}")
+            await update.message.reply_text("❌ Помилка при обробці заяви.")
     else:
-        # Відхилення
-        await update.message.reply_text(f"❌ Заяву відхилено.\nМодератор: {name}")
+        # Відхилення - редагуємо повідомлення адміністратора
+        admin_edit_message = (
+            "❌ ЗАЯВА ВІДХИЛЕНА\n\n"
+            f"1. Кому надається: {form.get('to_whom')}\n"
+            f"2. На скільки (час): {form.get('duration')}\n"
+            f"3. Підрозділ: {form.get('department')}\n\n"
+            f"Від: {form.get('author')}\n"
+            f"Модератор: {name}"
+        )
+        
+        try:
+            # Редагуємо оригінальне повідомлення адміністратора
+            await context.bot.edit_message_text(
+                chat_id=update.effective_chat.id,
+                message_id=original_message_id,
+                text=admin_edit_message
+            )
+            await update.message.reply_text(f"❌ Заяву відхилено.")
+        except Exception as e:
+            logger.error(f"Помилка при редагуванні повідомлення: {e}")
+            await update.message.reply_text("❌ Помилка при обробці відхилення.")
     
     # Очищуємо збережені дані
     context.bot_data.pop(form_key, None)
@@ -1004,7 +1012,6 @@ def main() -> None:
         entry_points=[CommandHandler("neaktyv", neaktyv_start), MessageHandler(filters.Regex("^📝 Заява на неактив$"), neaktyv_start)],
         states={
             NEAKTYV_TO: [MessageHandler(filters.TEXT & ~filters.COMMAND, neaktyv_to)],
-            NEAKTYV_BY: [MessageHandler(filters.TEXT & ~filters.COMMAND, neaktyv_by)],
             NEAKTYV_TIME: [MessageHandler(filters.TEXT & ~filters.COMMAND, neaktyv_time)],
             NEAKTYV_DEPARTMENT: [MessageHandler(filters.TEXT & ~filters.COMMAND, neaktyv_dept)],
         },
