@@ -583,7 +583,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         is_admin = user.id in ADMIN_IDS
         keyboard_rows = [["📝 Заява на неактив"]]
         if is_admin:
-            keyboard_rows.append(["⚡ Адмін-команди"])  # Перемикач у адмін-меню
+            keyboard_rows.append(["�️ Адмін-команди"])  # Перемикач у адмін-меню
         reply_kb = ReplyKeyboardMarkup(keyboard_rows, resize_keyboard=True)
 
         text = (
@@ -1886,7 +1886,7 @@ async def open_user_menu(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     
     kb_rows = [["📝 Заява на неактив"]]
     if user_id in ADMIN_IDS:
-        kb_rows.append(["⚡ Адмін-команди"])
+        kb_rows.append(["🛡️ Адмін-команди"])
         logger.info(f"Added admin button for admin {user_id}")
     
     kb = ReplyKeyboardMarkup(kb_rows, resize_keyboard=True)
@@ -2149,7 +2149,7 @@ def main() -> None:
     application.add_handler(refill_conv)
 
     # Перемикачі меню для адмінів (до загального обробника текстів!)
-    application.add_handler(MessageHandler(filters.Regex("^⚡ Адмін-команди$"), open_admin_menu))
+    application.add_handler(MessageHandler(filters.Regex("^🛡️ Адмін-команди$"), open_admin_menu))
     application.add_handler(MessageHandler(filters.Regex("^🔙 Звичайні команди$"), open_user_menu))
     
     # Додаткові обробники на випадок проблем з емодзі
