@@ -2,8 +2,8 @@ import os
 import logging
 import re
 import time
-import traceback
 from collections import deque
+import requests
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, ReplyKeyboardMarkup, ReplyKeyboardRemove
 from telegram.ext import (
     Application,
@@ -15,7 +15,7 @@ from telegram.ext import (
     ConversationHandler,
     ApplicationHandlerStop,
 )
-from db import init_db, upsert_profile, update_profile_fields, get_profile, get_profile_images
+from db import init_db, upsert_profile, update_profile_fields, get_profile
 from db import replace_profile_images
 from db import (
     insert_warning,
@@ -23,10 +23,6 @@ from db import (
     decide_neaktyv_request,
     insert_access_application,
     decide_access_application,
-    insert_promotion_request,
-    get_promotion_request,
-    get_pending_promotion_requests,
-    decide_promotion_request,
 )
 from db import log_action, log_profile_update, log_antispam_event
 from db import (
@@ -239,41 +235,6 @@ NPU_DEPARTMENTS = {
     },
 }
 
-# Система рангов НПУ (от низших к высшим)
-NPU_RANKS = [
-    # Младший состав
-    "Курсант поліції",
-    "Поліцейський",
-    "Старший поліцейський",
-    "Молодший сержант поліції",
-    "Сержант поліції",
-    "Старший сержант поліції",
-    "Старшина поліції",
-    # Средний командный состав
-    "Молодший лейтенант поліції",
-    "Лейтенант поліції", 
-    "Старший лейтенант поліції",
-    "Капітан поліції",
-    # Старший командный состав
-    "Майор поліції",
-    "Підполковник поліції",
-    "Полковник поліції",
-    # Высший командный состав
-    "Генерал-майор поліції",
-    "Генерал-лейтенант поліції",
-    "Генерал-полковник поліції",
-    "Генерал поліції України",
-]
-
-def get_next_ranks(current_rank: str) -> list:
-    """Получить доступные ранги для повышения (только следующие)."""
-    try:
-        current_index = NPU_RANKS.index(current_rank)
-        # Возвращаем только следующий ранг (или несколько следующих если нужно)
-        return NPU_RANKS[current_index + 1:current_index + 3]  # следующие 1-2 ранга
-    except (ValueError, IndexError):
-        return []
-
 # Список звань НПУ для UKRAINE GTA (по порядку)
 NPU_RANKS = [
     "Рядовий",
@@ -328,6 +289,52 @@ def is_ukrainian_name(text: str) -> bool:
 def display_ranked_name(rank: str | None, name: str) -> str:
     """Повертає відформатоване ім'я з опціональним званням."""
     return f"{rank} {name}".strip() if rank else name
+
+def is_valid_image_url(url: str) -> bool:
+    """Перевіряє, чи є URL валідним посиланням на зображення"""
+    # Базова перевірка формату URL
+    url_pattern = re.compile(
+        r'^https?://'  # http:// або https://
+        r'(?:(?:[A-Z0-9](?:[A-Z0-9-]{0,61}[A-Z0-9])?\.)+[A-Z]{2,6}\.?|'  # домен
+        r'localhost|'  # localhost
+        r'\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})'  # IP
+        r'(?::\d+)?'  # опціональний порт
+        r'(?:/?|[/?]\S+)$', re.IGNORECASE)
+    
+    if not url_pattern.match(url):
+        return False
+    
+    # Перевіряємо розширення файлу
+    image_extensions = ('.jpg', '.jpeg', '.png', '.gif', '.bmp', '.webp')
+    if any(url.lower().endswith(ext) for ext in image_extensions):
+        return True
+    
+    # Перевіряємо популярні хостинги зображень
+    image_hosts = ['imgbb.com', 'imgur.com', 'postimg.cc', 'ibb.co', 'imageban.ru', 'radikal.ru']
+    if any(host in url.lower() for host in image_hosts):
+        return True
+    
+    # Додаткова перевірка через HTTP HEAD запит
+    try:
+        response = requests.head(url, timeout=5)
+        content_type = response.headers.get('content-type', '')
+        return content_type.startswith('image/')
+    except:
+        return False
+
+def validate_image_urls(urls: list) -> tuple:
+    """Валідує список URL зображень"""
+    valid_urls = []
+    invalid_urls = []
+    
+    for url in urls:
+        url = url.strip()
+        if is_valid_image_url(url):
+            valid_urls.append(url)
+        else:
+            invalid_urls.append(url)
+    
+    return valid_urls, invalid_urls
 
 # ===== Тимчасова команда для повторного заповнення профілю =====
 async def refill_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
@@ -426,49 +433,41 @@ async def refill_select_rank(update: Update, context: ContextTypes.DEFAULT_TYPE)
 
     rank = NPU_RANKS[idx]
     context.user_data.setdefault("refill_form", {})["rank"] = rank
-    context.user_data["refill_images_received"] = []
     await query.edit_message_text(
         f"✅ Звання обрано: {rank}\n\n"
-        "🔸 Крок 4 з 4: Надішліть 2 фотографії (посвідчення та трудову книжку).\n\n"
-        "Надішліть фотографії прямо в чат (по одній за раз).")
+        "🔸 Крок 4 з 4: Надішліть 2 посилання на скріншоти (посвідчення та трудову книжку).\n\n"
+        "Кожен URL з нового рядка. Підтримуються imgbb/imgur/postimg та ін.")
     return REFILL_IMAGES
 
-async def refill_photo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """Обработка фотографий для /refill"""
-    user = update.effective_user
-    
-    if not update.message.photo:
-        await update.message.reply_text("❌ Будь ласка, надішліть фотографію (не файл).")
+async def refill_images(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    text = update.message.text.strip()
+    urls = [u.strip() for u in text.splitlines() if u.strip()]
+    if len(urls) < 2:
+        await update.message.reply_text(
+            "❌ Потрібно мінімум 2 посилання на зображення. Надішліть ще раз.")
         return REFILL_IMAGES
-    
-    photo = update.message.photo[-1]
-    file_id = photo.file_id
-    
+    valid, invalid = validate_image_urls(urls)
+    if invalid or len(valid) < 2:
+        bad = "\n".join(f"• {u}" for u in invalid) if invalid else ""
+        await update.message.reply_text(
+            ("❌ Деякі посилання некоректні:\n" + bad + "\n\n" if bad else "") +
+            "Надішліть 2+ валідних URL (imgbb/imgur/postimg).")
+        return REFILL_IMAGES
+
+    form = context.user_data.get("refill_form", {})
+    user = update.effective_user
+
+    # Оновлюємо профіль та зображення в БД
     try:
-        if "refill_images_received" not in context.user_data:
-            context.user_data["refill_images_received"] = []
-        
-        context.user_data["refill_images_received"].append(file_id)
-        images_count = len(context.user_data["refill_images_received"])
-        
-        if images_count < 2:
-            await update.message.reply_text(
-                f"✅ Фото {images_count}/2 отримано.\n\n"
-                "📸 Надішліть ще одне фото."
-            )
-            return REFILL_IMAGES
-        else:
-            form = context.user_data.get("refill_form", {})
-            file_ids = context.user_data["refill_images_received"]
-            
-            update_profile_fields(
-                user.id,
-                in_game_name=form.get("in_game_name"),
-                npu_department=form.get("npu_department"),
-                rank=form.get("rank"),
-            )
-            replace_profile_images(user.id, file_ids)
-            
+        update_profile_fields(
+            user.id,
+            in_game_name=form.get("in_game_name"),
+            npu_department=form.get("npu_department"),
+            rank=form.get("rank"),
+        )
+        replace_profile_images(user.id, valid)
+        # Логи оновлення профілю та дії
+        try:
             log_profile_update(
                 user_id=user.id,
                 fields={
@@ -476,38 +475,40 @@ async def refill_photo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> in
                     "npu_department": form.get("npu_department"),
                     "rank": form.get("rank"),
                 },
-                images_count=len(file_ids),
+                images_count=len(valid),
                 source="refill",
             )
             log_action(
                 actor_id=user.id,
-                actor_username=user.username,
+                actor_username=update.effective_user.username if update.effective_user else None,
                 action="profile_refill",
                 target_user_id=user.id,
-                target_username=user.username,
-                details=f"images={len(file_ids)}",
+                target_username=update.effective_user.username if update.effective_user else None,
+                details=f"images={len(valid)}",
             )
-
-            summary = (
-                "✅ <b>Профіль оновлено</b>\n\n"
-                "<blockquote>"
-                f"Ім'я у грі: {form.get('in_game_name')}\n"
-                f"Підрозділ: {form.get('npu_department')}\n"
-                f"Звання: {form.get('rank')}\n"
-                f"Фото: {len(file_ids)} зображення"
-                "</blockquote>\n\n"
-                "Дякуємо! Ця команда є <i>тимчасовою</i> і буде видалена після міграції."
-            )
-            await update.message.reply_text(summary, parse_mode="HTML", disable_web_page_preview=True)
-
-            context.user_data.pop("refill_form", None)
-            context.user_data.pop("refill_images_received", None)
-            return ConversationHandler.END
-    
+        except Exception:
+            pass
     except Exception as e:
-        logger.error(f"Error processing refill photo: {e}", exc_info=True)
-        await update.message.reply_text("❌ Помилка обробки фотографії. Спробуйте ще раз.")
-        return REFILL_IMAGES
+        logger.error(f"refill save failed: {e}")
+        await update.message.reply_text("⚠️ Сталася помилка при збереженні. Спробуйте ще раз пізніше.")
+        return ConversationHandler.END
+
+    # Підсумок
+    summary = (
+        "✅ <b>Профіль оновлено</b>\n\n"
+        "<blockquote>"
+        f"Ім'я у грі: {form.get('in_game_name')}\n"
+        f"Підрозділ: {form.get('npu_department')}\n"
+        f"Звання: {form.get('rank')}\n"
+        f"Фото: {len(valid)} посилання"
+        "</blockquote>\n\n"
+        "Дякуємо! Ця команда є <i>тимчасовою</i> і буде видалена після міграції."
+    )
+    await update.message.reply_text(summary, parse_mode="HTML", disable_web_page_preview=True)
+
+    # Очистка стану
+    context.user_data.pop("refill_form", None)
+    return ConversationHandler.END
 
 async def create_invite_link(context: ContextTypes.DEFAULT_TYPE, user_name: str) -> str:
     """Створює одноразове посилання-запрошення для користувача"""
@@ -580,11 +581,9 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if user_is_member:
         # Показуємо меню взаємодії (кнопки під полем вводу)
         is_admin = user.id in ADMIN_IDS
-        keyboard_rows = [
-            ["📝 Заява на неактив", "📈 Заява на підвищення"]
-        ]
+        keyboard_rows = [["📝 Заява на неактив"]]
         if is_admin:
-            keyboard_rows.append(["⚡ Адмін-команди"])  # Перемикач у адмін-меню
+            keyboard_rows.append(["�️ Адмін-команди"])  # Перемикач у адмін-меню
         reply_kb = ReplyKeyboardMarkup(keyboard_rows, resize_keyboard=True)
 
         text = (
@@ -628,62 +627,12 @@ async def admin_help_command(update: Update, context: ContextTypes.DEFAULT_TYPE)
     )
     await update.message.reply_text(text, parse_mode="HTML", disable_web_page_preview=True)
 
-async def show_pending_promotions(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Показать активные заявки на повышение (только для админов)."""
-    if update.effective_user.id not in ADMIN_IDS:
-        await update.message.reply_text("❌ Немає доступу.")
-        return
-    
-    # Получаем все активные заявки
-    pending_requests = get_pending_promotion_requests()
-    
-    if not pending_requests:
-        await update.message.reply_text(
-            "📈 <b>Рапорти на підвищення</b>\n\n"
-            "🔍 Немає активних заявок на розгляд.",
-            parse_mode="HTML"
-        )
-        return
-    
-    # Создаем сообщение со списком заявок
-    message_text = f"📈 <b>Рапорти на підвищення</b>\n\nАктивних заявок: {len(pending_requests)}\n\n"
-    
-    # Создаем кнопки для каждой заявки
-    keyboard = []
-    for i, req in enumerate(pending_requests, 1):
-        created_date = req['created_at'][:10] if req['created_at'] else 'N/A'  # YYYY-MM-DD
-        
-        message_text += (
-            f"<b>{i}.</b> {req['requester_name']}\n"
-            f"   📈 {req['current_rank']} → {req['target_rank']}\n"
-            f"   📅 {created_date}\n\n"
-        )
-        
-        # Кнопка для просмотра конкретной заявки
-        keyboard.append([
-            InlineKeyboardButton(
-                f"📋 Заявка №{req['id']} ({req['requester_name']})",
-                callback_data=f"view_promotion_{req['id']}"
-            )
-        ])
-    
-    reply_markup = InlineKeyboardMarkup(keyboard)
-    
-    await update.message.reply_text(
-        message_text,
-        parse_mode="HTML",
-        reply_markup=reply_markup
-    )
-
 ############################
 # ДОГАН (адміністраторам)
 ############################
 
 # Стани для діалогу 'догана'
 DOGANA_OFFENSE, DOGANA_DATE, DOGANA_TO, DOGANA_BY, DOGANA_PUNISH = range(5)
-
-# Стани для заявки на підвищення
-PROMOTION_CURRENT_RANK, PROMOTION_TARGET_RANK, PROMOTION_WORKBOOK, PROMOTION_EVIDENCE = range(4)
 
 async def dogana_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     user = update.effective_user
@@ -909,7 +858,7 @@ async def neaktyv_to(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
             "• Містити лише літери українського алфавіту\n\n"
             "Приклади правильного введення (зі званням або без нього):\n"
             "✅ Рядовий Іван Петренко\n"
-            "✅ Капрал Марія Коваленко\n"
+            "✅ Капітан Марія Коваленко\n"
             "✅ Олексій Петренко\n\n"
             "Спробуйте ще раз:"
         )
@@ -1040,267 +989,6 @@ async def neaktyv_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     context.user_data.pop("neaktyv_form", None)
     await update.message.reply_text("Скасовано.", reply_markup=ReplyKeyboardRemove())
     return ConversationHandler.END
-
-############################
-# ЗАЯВКА НА ПІДВИЩЕННЯ
-############################
-
-async def promotion_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """Начать подачу заявки на повышение."""
-    user = update.effective_user
-    user_id = user.id
-    
-    # Проверяем, что у пользователя есть профиль с именем
-    profile = get_profile(user_id)
-    if not profile or not profile.get('in_game_name'):
-        await update.message.reply_text(
-            "❌ Помилка!\n\n"
-            "Для подачі заяви на підвищення у вас повинно бути заповнено ім'я в грі.\n"
-            "Будь ласка, спочатку подайте заявку на вступ або оновіть профіль через /refill."
-        )
-        return ConversationHandler.END
-    
-    # Инициализируем форму заявки
-    context.user_data["promotion_form"] = {
-        "requester_name": profile.get('in_game_name'),
-        "requester_username": user.username,
-    }
-    
-    # Создаем кнопки с рангами
-    keyboard = []
-    for rank in NPU_RANKS:
-        keyboard.append([rank])
-    
-    reply_markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True, one_time_keyboard=True)
-    
-    await update.message.reply_text(
-        "📈 <b>Заява на підвищення</b>\n\n"
-        f"Ім'я в грі: <b>{profile.get('in_game_name')}</b>\n\n"
-        "Крок 1: Оберіть ваш поточний ранг:",
-        parse_mode="HTML",
-        reply_markup=reply_markup
-    )
-    
-    return PROMOTION_CURRENT_RANK
-
-async def promotion_current_rank(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """Обработать выбор текущего ранга."""
-    current_rank = update.message.text.strip()
-    
-    if current_rank not in NPU_RANKS:
-        await update.message.reply_text(
-            "❌ Неправильний ранг. Оберіть зі списку нижче:",
-            reply_markup=ReplyKeyboardMarkup([[rank] for rank in NPU_RANKS], resize_keyboard=True)
-        )
-        return PROMOTION_CURRENT_RANK
-    
-    # Сохраняем текущий ранг
-    context.user_data["promotion_form"]["current_rank"] = current_rank
-    
-    # Получаем доступные ранги для повышения
-    next_ranks = get_next_ranks(current_rank)
-    
-    if not next_ranks:
-        await update.message.reply_text(
-            "❌ Ви вже маєте найвищий ранг або система не може визначити наступний ранг.",
-            reply_markup=ReplyKeyboardRemove()
-        )
-        return ConversationHandler.END
-    
-    # Создаем кнопки с доступными рангами для повышения
-    keyboard = [[rank] for rank in next_ranks]
-    reply_markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True, one_time_keyboard=True)
-    
-    await update.message.reply_text(
-        f"Поточний ранг: <b>{current_rank}</b>\n\n"
-        "Крок 2: Оберіть ранг, на який хочете підвищення:",
-        parse_mode="HTML",
-        reply_markup=reply_markup
-    )
-    
-    return PROMOTION_TARGET_RANK
-
-async def promotion_target_rank(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """Обработать выбор целевого ранга."""
-    target_rank = update.message.text.strip()
-    current_rank = context.user_data["promotion_form"]["current_rank"]
-    next_ranks = get_next_ranks(current_rank)
-    
-    if target_rank not in next_ranks:
-        await update.message.reply_text(
-            "❌ Неправильний ранг. Оберіть зі списку доступних для підвищення:",
-            reply_markup=ReplyKeyboardMarkup([[rank] for rank in next_ranks], resize_keyboard=True)
-        )
-        return PROMOTION_TARGET_RANK
-    
-    # Сохраняем целевой ранг
-    context.user_data["promotion_form"]["target_rank"] = target_rank
-    
-    await update.message.reply_text(
-        f"Підвищення: <b>{current_rank}</b> → <b>{target_rank}</b>\n\n"
-        "Крок 3: Надішліть скриншот вашої трудової книги (зображення).\n"
-        "📋 Трудова книга повинна бути чітко видно.",
-        parse_mode="HTML",
-        reply_markup=ReplyKeyboardRemove()
-    )
-    
-    return PROMOTION_WORKBOOK
-
-async def promotion_workbook(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """Обработать скриншот трудовой книги."""
-    if not update.message.photo:
-        await update.message.reply_text(
-            "❌ Будь ласка, надішліть зображення трудової книги."
-        )
-        return PROMOTION_WORKBOOK
-    
-    # Получаем URL изображения (самое большое разрешение)
-    photo = update.message.photo[-1]
-    
-    try:
-        file = await context.bot.get_file(photo.file_id)
-        # Сохраняем file_id изображения
-        context.user_data["promotion_form"]["workbook_image_id"] = photo.file_id
-        
-        await update.message.reply_text(
-            "✅ Скриншот трудової книги прийнято.\n\n"
-            "Крок 4: Надішліть скриншот проведеної роботи (зображення).\n"
-            "📸 Це може бути скриншот з гри, звітів, виконаних завдань тощо."
-        )
-        
-        return PROMOTION_EVIDENCE
-        
-    except Exception as e:
-        logger.error(f"Error processing workbook image: {e}")
-        await update.message.reply_text(
-            "❌ Помилка обробки зображення. Спробуйте ще раз."
-        )
-        return PROMOTION_WORKBOOK
-
-async def promotion_evidence(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """Обработать скриншот проделанной работы."""
-    if not update.message.photo:
-        await update.message.reply_text(
-            "❌ Будь ласка, надішліть зображення проведеної роботи."
-        )
-        return PROMOTION_EVIDENCE
-    
-    # Получаем URL изображения
-    photo = update.message.photo[-1]
-    
-    try:
-        # Сохраняем file_id изображения
-        context.user_data["promotion_form"]["work_evidence_image_id"] = photo.file_id
-        
-        # Получаем все данные формы
-        form = context.user_data.get("promotion_form", {})
-        user = update.effective_user
-        
-        # Сохраняем заявку в базу данных
-        request_id = insert_promotion_request(
-            requester_id=user.id,
-            requester_username=user.username or "",
-            requester_name=form["requester_name"],
-            current_rank=form["current_rank"],
-            target_rank=form["target_rank"],
-            workbook_image_id=form["workbook_image_id"],
-            work_evidence_image_id=form["work_evidence_image_id"]
-        )
-        
-        # Логируем создание заявки
-        log_action(
-            actor_id=user.id,
-            actor_username=user.username,
-            action="create_promotion_request",
-            target_user_id=user.id,
-            target_username=user.username,
-            details=f"Current: {form['current_rank']}, Target: {form['target_rank']}"
-        )
-        
-        # Отправляем заявку админам на модерацию
-        await send_promotion_to_admins(context, request_id, form, user)
-        
-        await update.message.reply_text(
-            "✅ <b>Заявка на підвищення подана!</b>\n\n"
-            f"📋 Заявка №{request_id}\n"
-            f"👤 Заявник: {form['requester_name']}\n"
-            f"📈 Підвищення: {form['current_rank']} → {form['target_rank']}\n\n"
-            "Ваша заявка відправлена адміністраторам на розгляд. "
-            "Очікуйте рішення найближчим часом.",
-            parse_mode="HTML"
-        )
-        
-        # Очищаем данные формы
-        context.user_data.pop("promotion_form", None)
-        
-        return ConversationHandler.END
-        
-    except Exception as e:
-        logger.error(f"Error processing promotion request: {e}")
-        log_error("promotion_request_error", str(e), traceback.format_exc())
-        await update.message.reply_text(
-            "❌ Помилка створення заявки. Спробуйте пізніше."
-        )
-        return ConversationHandler.END
-
-async def promotion_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """Отменить подачу заявки на повышение."""
-    context.user_data.pop("promotion_form", None)
-    await update.message.reply_text("Подача заявки на підвищення скасована.", reply_markup=ReplyKeyboardRemove())
-    return ConversationHandler.END
-
-async def send_promotion_to_admins(context: ContextTypes.DEFAULT_TYPE, request_id: int, form: dict, user):
-    """Отправить заявку на повышение админам для модерации."""
-    
-    # Отправляем фотографии как отдельные сообщения, а затем текст с кнопками
-    workbook_image_id = form.get("workbook_image_id")
-    work_evidence_image_id = form.get("work_evidence_image_id")
-
-    admin_message_text = (
-        "📈 <b>НОВА ЗАЯВКА НА ПІДВИЩЕННЯ</b>\n\n"
-        f"📋 Заявка №{request_id}\n\n"
-        f"👤 Заявник: {form['requester_name']}\n"
-        f"🆔 Telegram: @{user.username or 'немає'} (ID: {user.id})\n"
-        f"📊 Поточний ранг: {form['current_rank']}\n"
-        f"📈 Бажаний ранг: {form['target_rank']}\n\n"
-        "<i>Докази надіслано окремими повідомленнями вище.</i>"
-    )
-    
-    # Кнопки для модерации
-    keyboard = [
-        [
-            InlineKeyboardButton("✅ Одобрити", callback_data=f"approve_promotion_{request_id}"),
-            InlineKeyboardButton("❌ Відхилити", callback_data=f"reject_promotion_{request_id}")
-        ]
-    ]
-    reply_markup = InlineKeyboardMarkup(keyboard)
-    
-    # Отправляем всем админам
-    for admin_id in ADMIN_IDS:
-        try:
-            # Отправляем фото трудовой
-            if workbook_image_id:
-                await context.bot.send_photo(
-                    chat_id=admin_id,
-                    photo=workbook_image_id,
-                    caption="Трудова книга"
-                )
-            # Отправляем фото доказательств
-            if work_evidence_image_id:
-                await context.bot.send_photo(
-                    chat_id=admin_id,
-                    photo=work_evidence_image_id,
-                    caption="Докази роботи"
-                )
-            # Отправляем основное сообщение
-            await context.bot.send_message(
-                chat_id=admin_id,
-                text=admin_message_text,
-                parse_mode="HTML",
-                reply_markup=reply_markup
-            )
-        except Exception as e:
-            logger.error(f"Failed to send promotion request to admin {admin_id}: {e}")
 
 ############################
 # МОДЕРАЦІЯ ЗАЯВ НА НЕАКТИВ
@@ -1508,295 +1196,6 @@ async def cancel_neaktyv_moderation(update: Update, context: ContextTypes.DEFAUL
     await update.message.reply_text("❌ Модерацію скасовано.")
     return ConversationHandler.END
 
-############################
-# МОДЕРАЦІЯ ЗАЯВОК НА ПІДВИЩЕННЯ
-############################
-
-async def handle_promotion_moderation(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Обробка модерації заявок на підвищення."""
-    query = update.callback_query
-    await query.answer()
-    
-    if query.from_user.id not in ADMIN_IDS:
-        await query.edit_message_text("❌ Немає доступу.")
-        return
-    
-    # Парсинг callback_data
-    if query.data.startswith("approve_promotion_"):
-        request_id = int(query.data.split("_")[2])
-        await approve_promotion_request(update, context, request_id)
-    elif query.data.startswith("reject_promotion_"):
-        request_id = int(query.data.split("_")[2])
-        await start_reject_promotion_request(update, context, request_id)
-
-async def approve_promotion_request(update: Update, context: ContextTypes.DEFAULT_TYPE, request_id: int):
-    """Одобрити заявку на підвищення."""
-    query = update.callback_query
-    admin = query.from_user
-    
-    # Получаем профиль админа для ранга
-    admin_profile = get_profile(admin.id)
-    admin_rank = admin_profile.get('rank', 'Адміністратор') if admin_profile else 'Адміністратор'
-    
-    # Получаем заявку из БД
-    request = get_promotion_request(request_id)
-    if not request:
-        await query.edit_message_text("❌ Заявка не знайдена.")
-        return
-    
-    if request["status"] != "pending":
-        await query.edit_message_text("❌ Заявка вже оброблена.")
-        return
-    
-    # Одобряем заявку в БД
-    success = decide_promotion_request(
-        request_id=request_id,
-        moderator_id=admin.id,
-        moderator_username=admin.username or "",
-        moderator_rank=admin_rank,
-        approved=True
-    )
-    
-    if not success:
-        await query.edit_message_text("❌ Помилка одобрення заявки.")
-        return
-    
-    # Логируем действие
-    log_action(
-        actor_id=admin.id,
-        actor_username=admin.username,
-        action="approve_promotion",
-        target_user_id=request["requester_id"],
-        target_username=request["requester_username"],
-        details=f"request_id={request_id}; {request['current_rank']}->{request['target_rank']}"
-    )
-    
-    # Обновляем сообщение
-    await query.edit_message_text(
-        f"✅ <b>ПІДВИЩЕННЯ ОДОБРЕНО</b>\n\n"
-        f"📋 Заявка №{request_id}\n"
-        f"👤 Заявник: {request['requester_name']}\n"
-        f"📈 Підвищення: {request['current_rank']} → {request['target_rank']}\n"
-        f"👔 Модератор: @{admin.username or 'невідомо'} ({admin_rank})\n\n"
-        f"✅ Одобрено та відправлено в канал.",
-        parse_mode="HTML"
-    )
-    
-    # Отправляем в канал
-    await send_promotion_to_channel(context, request, admin_rank, admin.username or admin.first_name)
-    
-    # Уведомляем заявителя
-    try:
-        await context.bot.send_message(
-            chat_id=request["requester_id"],
-            text=f"🎉 <b>Вітаємо!</b>\n\n"
-                 f"Ваша заявка на підвищення №{request_id} одобрена!\n"
-                 f"📈 {request['current_rank']} → {request['target_rank']}\n\n"
-                 f"Інформація про підвищення відправлена в офіційний канал.",
-            parse_mode="HTML"
-        )
-    except Exception as e:
-        logger.error(f"Failed to notify user about promotion approval: {e}")
-
-async def start_reject_promotion_request(update: Update, context: ContextTypes.DEFAULT_TYPE, request_id: int):
-    """Начать процесс отклонения заявки (запросить причину)."""
-    query = update.callback_query
-    
-    # Сохраняем ID заявки для последующей обработки
-    context.user_data["reject_promotion_id"] = request_id
-    context.user_data["original_promotion_message_id"] = query.message.message_id
-    
-    await query.edit_message_text(
-        f"❌ <b>Відхилення заявки №{request_id}</b>\n\n"
-        "Введіть причину відхилення заявки на підвищення:",
-        parse_mode="HTML"
-    )
-    
-    # Ждем ввода причины
-    context.user_data["awaiting_reject_reason"] = True
-
-async def process_reject_reason(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Обработать причину отклонения заявки."""
-    if not context.user_data.get("awaiting_reject_reason"):
-        return
-    
-    reject_reason = update.message.text.strip()
-    request_id = context.user_data.get("reject_promotion_id")
-    original_message_id = context.user_data.get("original_promotion_message_id")
-    
-    if not request_id:
-        await update.message.reply_text("❌ Помилка: ID заявки не знайдено.")
-        return
-    
-    admin = update.effective_user
-    admin_profile = get_profile(admin.id)
-    admin_rank = admin_profile.get('rank', 'Адміністратор') if admin_profile else 'Адміністратор'
-    
-    # Получаем заявку
-    request = get_promotion_request(request_id)
-    if not request:
-        await update.message.reply_text("❌ Заявка не знайдена.")
-        return
-    
-    # Отклоняем заявку в БД
-    success = decide_promotion_request(
-        request_id=request_id,
-        moderator_id=admin.id,
-        moderator_username=admin.username or "",
-        moderator_rank=admin_rank,
-        approved=False,
-        reject_reason=reject_reason
-    )
-    
-    if not success:
-        await update.message.reply_text("❌ Помилка відхилення заявки.")
-        return
-    
-    # Логируем действие
-    log_action(
-        actor_id=admin.id,
-        actor_username=admin.username,
-        action="reject_promotion",
-        target_user_id=request["requester_id"],
-        target_username=request["requester_username"],
-        details=f"request_id={request_id}; reason={reject_reason}"
-    )
-    
-    # Обновляем оригинальное сообщение
-    try:
-        await context.bot.edit_message_text(
-            chat_id=update.effective_chat.id,
-            message_id=original_message_id,
-            text=f"❌ <b>ПІДВИЩЕННЯ ВІДХИЛЕНО</b>\n\n"
-                 f"📋 Заявка №{request_id}\n"
-                 f"👤 Заявник: {request['requester_name']}\n"
-                 f"📈 Підвищення: {request['current_rank']} → {request['target_rank']}\n"
-                 f"👔 Модератор: @{admin.username or 'невідомо'} ({admin_rank})\n\n"
-                 f"❌ Причина відхилення: {reject_reason}",
-            parse_mode="HTML"
-        )
-    except Exception as e:
-        logger.error(f"Failed to edit promotion message: {e}")
-    
-    # Уведомляем заявителя
-    try:
-        await context.bot.send_message(
-            chat_id=request["requester_id"],
-            text=f"❌ <b>Заявка відхилена</b>\n\n"
-                 f"Ваша заявка на підвищення №{request_id} була відхилена.\n"
-                 f"📈 {request['current_rank']} → {request['target_rank']}\n\n"
-                 f"📝 Причина відхилення: {reject_reason}\n\n"
-                 f"Ви можете подати нову заявку після усунення зауважень.",
-            parse_mode="HTML"
-        )
-    except Exception as e:
-        logger.error(f"Failed to notify user about promotion rejection: {e}")
-    
-    await update.message.reply_text("✅ Заявку відхилено. Заявник отримав повідомлення.")
-    
-    # Очищаем данные
-    context.user_data.pop("awaiting_reject_reason", None)
-    context.user_data.pop("reject_promotion_id", None)
-    context.user_data.pop("original_promotion_message_id", None)
-
-async def send_promotion_to_channel(context: ContextTypes.DEFAULT_TYPE, request: dict, admin_rank: str, admin_name: str):
-    """Отправить одобренную заявку в канал."""
-    
-    channel_message = (
-        "🔺 <b>ПІДВИЩЕННЯ В ЗВАННІ</b>\n\n"
-        f"👤 <b>Підвищено:</b> {request['requester_name']}\n"
-        f"📈 <b>Підвищення:</b> {request['current_rank']} → {request['target_rank']}\n\n"
-        f"✅ <b>Одобрив:</b> {admin_name} ({admin_rank})\n\n"
-        f"📋 <b>Вимога для старшого складу:</b>\n"
-        f"Підвищити у званні {request['requester_name']} "
-        f"з {request['current_rank']} до {request['target_rank']}."
-    )
-    
-    try:
-        await context.bot.send_message(
-            chat_id=REPORTS_CHAT_ID,
-            text=channel_message,
-            parse_mode="HTML"
-        )
-        logger.info(f"Promotion request {request['id']} sent to channel")
-    except Exception as e:
-        logger.error(f"Failed to send promotion to channel: {e}")
-
-async def view_promotion_request(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Показати деталі конкретної заявки на підвищення."""
-    query = update.callback_query
-    await query.answer()
-
-    if query.from_user.id not in ADMIN_IDS:
-        await query.edit_message_text("❌ Немає доступу.")
-        return
-
-    try:
-        # Извлекаем ID заявки из callback_data (может быть view_promotion_{id} или back_to_promotions_list)
-        if query.data.startswith("view_promotion_"):
-            request_id = int(query.data.split("_")[-1])
-        else: # back_to_promotions_list
-            await show_pending_promotions(update, context)
-            return
-    except (ValueError, IndexError):
-        await query.edit_message_text("Помилка: невірний ID заявки.")
-        return
-
-    request = get_promotion_request(request_id)
-    if not request:
-        await query.edit_message_text("❌ Заявка не знайдена.")
-        return
-
-    # Удаляем предыдущее сообщение (список заявок)
-    await query.delete_message()
-
-    # Формируем детальное сообщение с заявкой
-    created_date = request['created_at'][:19] if request['created_at'] else 'N/A'
-    
-    message_text = (
-        f"📈 <b>ЗАЯВКА НА ПІДВИЩЕННЯ #{request_id}</b>\n\n"
-        f"👤 <b>Заявник:</b> {request['requester_name']}\n"
-        f"🆔 <b>Telegram:</b> @{request['requester_username'] or 'немає'} (ID: {request['requester_id']})\n"
-        f"📊 <b>Поточний ранг:</b> {request['current_rank']}\n"
-        f"📈 <b>Бажаний ранг:</b> {request['target_rank']}\n"
-        f"📅 <b>Дата подачі:</b> {created_date}\n\n"
-        f"⏳ <b>Статус:</b> {request['status']}"
-    )
-
-    # Отправляем фото
-    if request.get("workbook_image_id"):
-        await context.bot.send_photo(
-            chat_id=query.from_user.id,
-            photo=request["workbook_image_id"],
-            caption="Трудова книга"
-        )
-    if request.get("work_evidence_image_id"):
-        await context.bot.send_photo(
-            chat_id=query.from_user.id,
-            photo=request["work_evidence_image_id"],
-            caption="Докази роботи"
-        )
-
-    # Кнопки для модерации
-    keyboard = []
-    if request['status'] == 'pending':
-        keyboard.append([
-            InlineKeyboardButton("✅ Одобрити", callback_data=f"approve_promotion_{request_id}"),
-            InlineKeyboardButton("❌ Відхилити", callback_data=f"reject_promotion_{request_id}")
-        ])
-    
-    keyboard.append([
-        InlineKeyboardButton("🔙 Назад до списку", callback_data="list_pending_promotions")
-    ])
-    reply_markup = InlineKeyboardMarkup(keyboard)
-
-    await context.bot.send_message(
-        chat_id=query.from_user.id,
-        text=message_text,
-        parse_mode="HTML",
-        reply_markup=reply_markup
-    )
-
 async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Обробник натискань на кнопки"""
     query = update.callback_query
@@ -1833,12 +1232,11 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
                     pass
                 await query.edit_message_text(
                     f"✅ Звання обрано: {rank}\n\n"
-                    "📝 Крок 3: Надішліть скріншоти (2 фото)\n\n"
-                    "Потрібні: посвідчення та трудова книжка. Надішліть фотографії прямо в чат (по одній за раз)."
+                    "📝 Крок 3: Надішліть посилання на скріншоти (2 шт)\n\n"
+                    "Потрібні: посвідчення та трудова книжка. Розмістіть на imgbb/imgur/postimg та надішліть прямі URL, кожен з нового рядка."
                 )
-                context.user_data['step'] = 'waiting_images'
-                context.user_data['images_received'] = []
-                USER_APPLICATIONS[user_id]['step'] = 'waiting_images'
+                context.user_data['step'] = 'waiting_image_urls'
+                USER_APPLICATIONS[user_id]['step'] = 'waiting_image_urls'
     
     elif query.data.startswith("approve_"):
         user_id = int(query.data.split("_")[1])
@@ -1857,11 +1255,6 @@ async def handle_application_text(update: Update, context: ContextTypes.DEFAULT_
     # Логируем все входящие текстовые сообщения
     logger.info(f"handle_application_text: User {user_id} sent: '{message_text}'")
     
-    # Обработка причины отклонения заявки на повышение (для админов)
-    if context.user_data.get("awaiting_reject_reason"):
-        await process_reject_reason(update, context)
-        return
-    
     # Якщо користувач не в процесі подачі заявки
     if not context.user_data.get('awaiting_application'):
         logger.info(f"User {user_id} not in application process, ignoring text: '{message_text}'")
@@ -1871,7 +1264,8 @@ async def handle_application_text(update: Update, context: ContextTypes.DEFAULT_
     
     if step == 'waiting_name':
         await handle_name_input(update, context)
-    # waiting_images обрабатывается в отдельном handler для фотографий
+    elif step == 'waiting_image_urls':
+        await handle_image_urls_application(update, context)
 
 async def handle_name_input(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Обробник введення імені та прізвища"""
@@ -1955,7 +1349,7 @@ async def select_npu_department(update: Update, context: ContextTypes.DEFAULT_TY
     USER_APPLICATIONS[user_id]['step'] = 'waiting_rank'
     context.user_data['step'] = 'waiting_rank'
 
-    # Показати вибір звання
+    # Показать выбор звания
     rank_buttons = []
     row = []
     for idx, rank in enumerate(NPU_RANKS):
@@ -1975,110 +1369,175 @@ async def select_npu_department(update: Update, context: ContextTypes.DEFAULT_TY
     )
     await query.edit_message_text(desc, reply_markup=InlineKeyboardMarkup(rank_buttons), parse_mode="HTML")
 
-async def handle_photo_application(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Обробник фотографій для заявок на доступ"""
+async def handle_image_urls_application(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Обробник посилань на зображення для заявок"""
     user = update.effective_user
     user_id = user.id
 
-    if not context.user_data.get('awaiting_application') or context.user_data.get('step') != 'waiting_images':
+    # Перевіряємо чи користувач в процесі подачі заявки
+    if not context.user_data.get('awaiting_application'):
+        await update.message.reply_text(
+            "❌ Будь ласка, спочатку введіть команду /start та почніть подачу заявки."
+        )
         return
 
+    # Перевіряємо чи користувач вже надіслав текст
     if user_id not in USER_APPLICATIONS:
-        await update.message.reply_text("❌ Помилка: дані заявки не знайдено. Почніть з /start")
+        await update.message.reply_text(
+            "❌ Будь ласка, спочатку введіть текст заявки.\n"
+            "Використайте команду /start для початку."
+        )
         return
 
-    if not update.message.photo:
-        await update.message.reply_text("❌ Будь ласка, надішліть фотографію (не файл).")
+    user_data = USER_APPLICATIONS[user_id]
+    
+    # Перевіряємо чи очікуємо посилання на зображення
+    if user_data.get('step') != 'waiting_image_urls':
+        await update.message.reply_text(
+            "❌ Будь ласка, спочатку введіть текст заявки."
+        )
         return
 
-    photo = update.message.photo[-1]
-    file_id = photo.file_id
+    # Отримуємо текст повідомлення та розділяємо на рядки
+    message_text = update.message.text.strip()
+    urls = [url.strip() for url in message_text.split('\n') if url.strip()]
+    
+    if len(urls) < 2:
+        await update.message.reply_text(
+            "❌ Будь ласка, надішліть мінімум 2 посилання на зображення:\n"
+            "1. Скріншот посвідчення\n"
+            "2. Скріншот трудової книжки\n\n"
+            "Кожне посилання з нового рядка."
+        )
+        return
+    
+    # Валідуємо URL
+    valid_urls, invalid_urls = validate_image_urls(urls)
+    
+    if invalid_urls:
+        invalid_list = '\n'.join(f"• {url}" for url in invalid_urls)
+        await update.message.reply_text(
+            f"❌ Деякі посилання некоректні:\n\n{invalid_list}\n\n"
+            "Будь ласка, перевірте посилання та надішліть тільки валідні URL зображень.\n"
+            "Підтримуються: imgbb.com, imgur.com, postimg.cc та інші."
+        )
+        return
+    
+    if len(valid_urls) < 2:
+        await update.message.reply_text(
+            "❌ Потрібно мінімум 2 валідних посилання на зображення.\n"
+            "Будь ласка, завантажте скріншоти на imgbb.com або imgur.com та надішліть прямі посилання."
+        )
+        return
 
+    # Зберігаємо посилання
+    user_data['image_urls'] = valid_urls
+    # Сохраняем изображения в БД
+    replace_profile_images(user_id, valid_urls)
+    
+    await finalize_application(update, context, user_id)
+
+def get_image_info(url: str) -> str:
+    """Отримуємо інформацію про зображення для адміністратора"""
+    return f"🔗 Посилання: {url}"
+
+async def finalize_application(update: Update, context: ContextTypes.DEFAULT_TYPE, user_id: int) -> None:
+    """Завершуємо обробку заявки"""
+    user_data = USER_APPLICATIONS[user_id]
+    user = user_data['user']
+
+    # Створюємо заявку для обробки
+    PENDING_REQUESTS[user_id] = {
+        'user': user,
+        'name': user_data['name'],
+        'npu_department': user_data['npu_department'],
+        'image_urls': user_data['image_urls']
+    }
+
+    # Лог заявки на доступ у БД
     try:
-        if 'image_file_ids' not in USER_APPLICATIONS[user_id]:
-            USER_APPLICATIONS[user_id]['image_file_ids'] = []
-        
-        USER_APPLICATIONS[user_id]['image_file_ids'].append(file_id)
-        images_count = len(USER_APPLICATIONS[user_id]['image_file_ids'])
-
-        if images_count < 2:
-            await update.message.reply_text(f"✅ Фото {images_count}/2 отримано. Надішліть ще одне.")
-        else:
-            # Отримали всі фото, завершуємо заявку
-            application = USER_APPLICATIONS[user_id]
-            replace_profile_images(user_id, application['image_file_ids'])
-            
-            # Логування
+        insert_access_application(
+            user_id=user.id,
+            username=user.username,
+            in_game_name=user_data['name'],
+            npu_department=user_data['npu_department'],
+            rank=USER_APPLICATIONS[user_id].get('rank'),
+            images=user_data['image_urls'],
+        )
+        try:
+            # Знімок оновлення профілю та лог дії
             log_profile_update(
-                user_id=user_id,
-                fields=None,
-                images_count=len(application['image_file_ids']),
-                source="apply"
-            )
-            
-            # Формуємо повідомлення для адмінів
-            admin_message = (
-                "📝 <b>НОВА ЗАЯВКА НА ДОСТУП</b>\n\n"
-                f"👤 <b>Користувач:</b> @{user.username or 'немає'} (ID: {user_id})\n"
-                f"<b>Ім'я в грі:</b> {application['name']}\n"
-                f"<b>Підрозділ:</b> {application['npu_department']}\n"
-                f"<b>Звання:</b> {application.get('rank', 'не вказано')}\n\n"
-                "<i>Фото-докази надіслано окремими повідомленнями.</i>"
-            )
-            
-            keyboard = [
-                [
-                    InlineKeyboardButton("✅ Одобрити", callback_data=f"approve_{user_id}"),
-                    InlineKeyboardButton("❌ Відхилити", callback_data=f"reject_{user_id}")
-                ]
-            ]
-            reply_markup = InlineKeyboardMarkup(keyboard)
-
-            # Зберігаємо заявку в БД
-            db_app_id = insert_access_application(
-                user_id=user_id,
-                username=user.username,
-                in_game_name=application['name'],
-                npu_department=application['npu_department'],
-                rank=application.get('rank'),
-                images=",".join(application['image_file_ids']) # Зберігаємо ID як рядок
+                user_id=user.id,
+                fields={
+                    "in_game_name": user_data.get('name'),
+                    "npu_department": user_data.get('npu_department'),
+                    "rank": USER_APPLICATIONS[user_id].get('rank'),
+                },
+                images_count=len(user_data.get('image_urls') or []),
+                source="apply",
             )
             log_action(
-                actor_id=user_id, actor_username=user.username, action="access_application_created",
-                details=f"app_id={db_app_id}"
+                actor_id=user.id,
+                actor_username=user.username,
+                action="access_application_submitted",
+                target_user_id=user.id,
+                target_username=user.username,
+                details=f"images={len(user_data.get('image_urls') or [])}",
             )
+        except Exception:
+            pass
+    except Exception as dbe:
+        logger.error(f"DB insert access_application failed: {dbe}")
 
-            # Відправляємо адмінам
-            for admin_id in ADMIN_IDS:
-                try:
-                    # Спочатку фото
-                    for img_id in application['image_file_ids']:
-                        await context.bot.send_photo(chat_id=admin_id, photo=img_id)
-                    # Потім текст з кнопками
-                    await context.bot.send_message(
-                        chat_id=admin_id,
-                        text=admin_message,
-                        reply_markup=reply_markup,
-                        parse_mode="HTML"
-                    )
-                except Exception as e:
-                    logger.error(f"Не вдалося відправити заявку адміну {admin_id}: {e}")
+    # Відправляємо підтвердження користувачу
+    await update.message.reply_text(
+        "✅ Вашу заявку повністю отримано!\n\n"
+        f"👤 Ім'я: {user_data['name']}\n"
+        f"🎖️ Звання: {user_data.get('rank') or '—'}\n"
+        f"🏛️ Підрозділ НПУ: {user_data.get('npu_department') or '—'}\n"
+        f"🔗 Посилання на зображення: {len(user_data['image_urls'])}\n\n"
+        "Очікуйте на розгляд адміністратором. "
+        "Ви отримаєте повідомлення, коли заявку буде розглянуто."
+    )
 
-            await update.message.reply_text(
-                "✅ <b>Заявку відправлено!</b>\n\n"
-                "Ваша заявка на доступ відправлена на розгляд адміністрації. "
-                "Очікуйте на рішення.",
-                reply_markup=ReplyKeyboardRemove()
+    # Відправляємо заявку адміністраторам
+    keyboard = [
+        [
+            InlineKeyboardButton("✅ Схвалити", callback_data=f"approve_{user_id}"),
+            InlineKeyboardButton("❌ Відхилити", callback_data=f"reject_{user_id}")
+        ]
+    ]
+    reply_markup = InlineKeyboardMarkup(keyboard)
+
+    # Формуємо список зображень для адміністратора
+    images_list = "\n".join([f"{i+1}. {url}" for i, url in enumerate(user_data['image_urls'])])
+
+    admin_message = (
+        "🆕 Нова заявка на доступ!\n\n"
+        f"👤 Користувач: {user.first_name} {user.last_name or ''}\n"
+        f"🆔 ID: {user.id}\n"
+        f"📱 Нікнейм: @{user.username or 'немає'}\n\n"
+        f"📝 Заявка:\n"
+        f"👤 Ім'я: {user_data['name']}\n"
+        f"🎖️ Звання: {user_data.get('rank') or '—'}\n"
+        f"🏛️ Підрозділ НПУ: {user_data.get('npu_department') or '—'}\n\n"
+        f"🔗 Зображення ({len(user_data['image_urls'])}):\n{images_list}"
+    )
+
+    for admin_id in ADMIN_IDS:
+        try:
+            # Надсилаємо текстове повідомлення з кнопками
+            await context.bot.send_message(
+                chat_id=admin_id,
+                text=admin_message,
+                reply_markup=reply_markup
             )
-            
-            # Очищуємо стан
-            del USER_APPLICATIONS[user_id]
-            context.user_data.pop('awaiting_application', None)
-            context.user_data.pop('step', None)
+        except Exception as e:
+            logger.error(f"Не вдалося відправити повідомлення адміністратору {admin_id}: {e}")
 
-    except Exception as e:
-        logger.error(f"Помилка обробки фото для заявки: {e}", exc_info=True)
-        await update.message.reply_text("❌ Сталася помилка під час обробки фото. Спробуйте ще раз.")
+    # Очищуємо дані користувача
+    context.user_data['awaiting_application'] = False
+    del USER_APPLICATIONS[user_id]
 
 async def approve_request(update: Update, context: ContextTypes.DEFAULT_TYPE, user_id: int) -> None:
     """Схвалення заявки"""
@@ -2274,8 +1733,8 @@ async def admin_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     )
 
 async def logs_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Адм-команда: останні N дій, фільтри по даті/актору/дії.\n
-    Використання: /logs [limit] [action=<x>] [actor_id=<id>] [actor=@name] [from=YYYY-MM-DD] [to=YYYY-MM-DD]
+    """Адм-команда: последние N действий, фильтры по дате/актеру/действию.\n
+    Использование: /logs [limit] [action=<x>] [actor_id=<id>] [actor=@name] [from=YYYY-MM-DD] [to=YYYY-MM-DD]
     """
     if update.effective_user.id not in ADMIN_IDS:
         await update.message.reply_text("❌ Немає доступу.")
@@ -2365,7 +1824,7 @@ async def export_csv_command(update: Update, context: ContextTypes.DEFAULT_TYPE)
     await update.message.reply_document(document=(filename, content), caption=f"Експорт {table}{' за ' + str(days) + ' дн.' if days else ''}")
 
 async def log_stats_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Адм-команда: сводні показники.\n
+    """Адм-команда: сводные показатели.\n
     Использование: /log_stats [days=7]
     """
     if update.effective_user.id not in ADMIN_IDS:
@@ -2398,7 +1857,7 @@ async def broadcast_fill_profiles(update: Update, context: ContextTypes.DEFAULT_
         "Для оновлення бази, просимо кожного заповнити дані через бота:\n\n"
         "1) Відкрийте діалог з ботом та натисніть /start\n"
         "2) Пройдіть анкету доступу: введіть ім'я та прізвище, оберіть управління НПУ, оберіть <b>своє звання</b>\n"
-        "3) Надішліть 2 фотографії прямо в чат (посвідчення та трудову книжку)\n\n"
+    "3) Надішліть 2 посилання на скріншоти (посвідчення та трудову книжку) з imgbb/imgur/postimg (прямі URL)\n\n"
         "Дякуємо за оперативність!"
     )
     await update.message.reply_text(text, parse_mode="HTML")
@@ -2416,7 +1875,6 @@ async def open_admin_menu(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     logger.info(f"Opening admin menu for admin {user_id}")
     kb = ReplyKeyboardMarkup([
         ["📝 Оформити догану", "/admin_help"],
-        ["📈 Рапорти на підвищення"],
         ["🔙 Звичайні команди"],
     ], resize_keyboard=True)
     await update.message.reply_text("🛡️ Адмін-меню відкрито.", reply_markup=kb)
@@ -2426,11 +1884,9 @@ async def open_user_menu(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     user_id = update.effective_user.id
     logger.info(f"open_user_menu called by user {user_id}")
     
-    kb_rows = [
-        ["📝 Заява на неактив", "📈 Заява на підвищення"]
-    ]
+    kb_rows = [["📝 Заява на неактив"]]
     if user_id in ADMIN_IDS:
-        kb_rows.append(["⚡ Адмін-команди"])
+        kb_rows.append(["🛡️ Адмін-команди"])
         logger.info(f"Added admin button for admin {user_id}")
     
     kb = ReplyKeyboardMarkup(kb_rows, resize_keyboard=True)
@@ -2533,7 +1989,7 @@ async def handle_admin_user_action(update: Update, context: ContextTypes.DEFAULT
         prof = get_profile(target_id)
         disp = None
         if prof:
-            disp = display_ranked_name(prof.get('rank'), prof.get('to_whom') or prof.get('full_name_tg') or '')
+            disp = display_ranked_name(prof.get('rank'), prof.get('in_game_name') or prof.get('full_name_tg') or '')
         if disp:
             context.user_data["dogana_prefill_to"] = disp
             await query.edit_message_text(
@@ -2558,61 +2014,198 @@ async def handle_admin_user_action(update: Update, context: ContextTypes.DEFAULT
                 "⚠️ Не знайдено профіль для префілу. Натисніть /dogana та вкажіть ім'я вручну.")
 
 async def me_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Показати власний профіль."""
+    """Показати збережений профіль користувача."""
     user = update.effective_user
     profile = get_profile(user.id)
     if not profile:
-        await update.message.reply_text("❌ Ваш профіль ще не створено. Почніть з /start.")
+        await update.message.reply_text("ℹ️ Профіль ще не збережено. Натисніть /start і спробуйте знову.")
         return
-
-    # Отримуємо зображення
-    image_file_ids = get_profile_images(user.id)
-
     text = (
-        f"👤 <b>ВАШ ПРОФІЛЬ</b>\n\n"
-        f"<b>Ім'я в Telegram:</b> {profile.get('full_name_tg', 'не вказано')}\n"
-        f"<b>Username:</b> @{profile.get('username', 'немає')}\n"
-        f"<b>ID:</b> <code>{user.id}</code>\n\n"
-        f"<b>Ім'я в грі:</b> {profile.get('in_game_name', 'не вказано')}\n"
-        f"<b>Звання:</b> {profile.get('rank', 'не вказано')}\n"
-        f"<b>Підрозділ:</b> {profile.get('npu_department', 'не вказано')}\n\n"
-        f"<b>Роль:</b> {profile.get('role', 'user')}\n"
-        f"<b>Створено:</b> {profile.get('created_at', 'N/A')[:19]}\n"
-        f"<b>Оновлено:</b> {profile.get('updated_at', 'N/A')[:19]}\n"
+        "👤 <b>Ваш профіль</b>\n\n"
+        f"TG: @{profile['username'] or 'немає'}\n"
+        f"Ім'я в Telegram: {profile['full_name_tg'] or '—'}\n"
+        f"Ім'я у грі: {profile['in_game_name'] or '—'}\n"
+        f"Звання: {profile['rank'] or '—'}\n"
+        f"Підрозділ: {profile['npu_department'] or '—'}\n"
+        f"Роль: {profile['role'] or 'user'}\n"
     )
-    
     await update.message.reply_text(text, parse_mode="HTML")
 
-    if image_file_ids:
-        await update.message.reply_text("<b>Збережені фото:</b>", parse_mode="HTML")
-        for i, file_id in enumerate(image_file_ids):
+async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Показати довідку по командам та діям бота."""
+    is_admin = update.effective_user.id in ADMIN_IDS
+    text = (
+        "ℹ️ <b>Довідка</b>\n\n"
+        "<b>Основні команди</b>:\n"
+        "• /start — запустити бота та показати меню\n"
+        "• /help — ця довідка\n"
+        "• /me — показати ваш збережений профіль\n"
+    "• /neaktyv — подати <i>заяву на неактив</i> (також є кнопка в меню)\n"
+    "• /refill — <i>тимчасово</i>: перезаповнити ваш профіль для оновлень БД\n\n"
+        "<b>Заява на доступ у групу</b>:\n"
+        "1) Натисніть /start і дотримуйтесь інструкцій\n"
+        "2) Введіть <i>ім'я та прізвище українською</i> (повністю)\n"
+        "3) Оберіть <i>управління НПУ</i> і <i>своє звання</i> зі списку\n"
+    "4) Надішліть <i>2 посилання</i> на скріншоти (посвідчення і трудову книжку) з imgbb/imgur/postimg\n\n"
+        "<blockquote>Порада: надсилайте <b>прямі URL</b> зображень, кожне з нового рядка.</blockquote>\n\n"
+    )
+    if is_admin:
+        text += (
+            "<b>Адмінські команди</b>:\n"
+            "• /admin — коротка статистика заяв\n"
+            "• /dogana — оформлення догани\n"
+            "• /user &lt;id|@username&gt; — показати профіль користувача\n"
+            "• /find &lt;текст&gt; — пошук профілів (username/ім'я TG/ім'я у грі)\n"
+            "• /broadcast_fill — надіслати інструкцію для заповнення профілів\n\n"
+        )
+    text += (
+        "<b>Модерація заяв на неактив</b> (адміни):\n"
+        "• У приват повідомлення приходить карточка з кнопками <b>Одобрити/Відхилити</b>\n"
+        "• Після кліку бот попросить <i>ім'я та прізвище модератора</i> для підпису\n"
+        "• Результат публікується у групі з атрибуцією <i>Перевіряючий</i>\n\n"
+        "<b>Формат імені</b>: лише українські літери, повне ім'я та прізвище.\n"
+    )
+    await update.message.reply_text(text, parse_mode="HTML", disable_web_page_preview=True)
+
+def main() -> None:
+    """Запуск бота"""
+    # Створюємо додаток
+    application = Application.builder().token(BOT_TOKEN).build()
+    # Ініціалізуємо БД
+    init_db()
+    
+    # Pre-handlers: антиспам (найвищий пріоритет)
+    application.add_handler(MessageHandler(filters.ALL, anti_spam_message), group=-1)
+    application.add_handler(CallbackQueryHandler(anti_spam_callback, pattern=r".*"), group=-1)
+
+    # Додаємо обробники
+    application.add_handler(CommandHandler("start", start))
+    application.add_handler(CommandHandler("me", me_command))
+    application.add_handler(CommandHandler("help", help_command))
+    application.add_handler(CommandHandler("admin_help", admin_help_command))
+    application.add_handler(CommandHandler("admin", admin_command))
+    application.add_handler(CommandHandler("broadcast_fill", broadcast_fill_profiles))
+    application.add_handler(CommandHandler("user", user_lookup_command))
+    application.add_handler(CommandHandler("find", find_profiles_command))
+
+    # Попередньо обробляємо вибір покарання (inline) до загального кнопкового хендлера
+    application.add_handler(CallbackQueryHandler(dogana_punish_selected, pattern=r"^dogana_punish_"))
+    # Ограничиваем общий обработчик кнопок, чтобы не перехватывать approve_neaktyv_/reject_neaktyv_
+    application.add_handler(CallbackQueryHandler(button_handler, pattern=r"^(request_access|npu_.+|rank_\d+|approve_\d+|reject_\d+)$"))
+    # Адмінські кнопки з /find
+    application.add_handler(CallbackQueryHandler(handle_admin_user_action, pattern=r"^admin_(kick|warn)_\d+$"))
+
+    # Діалоги: Догани (адміністраторам)
+    dogana_conv = ConversationHandler(
+        entry_points=[CommandHandler("dogana", dogana_start), MessageHandler(filters.Regex("^📝 Оформити догану$"), dogana_start)],
+        states={
+            DOGANA_OFFENSE: [MessageHandler(filters.TEXT & ~filters.COMMAND, dogana_offense)],
+            DOGANA_DATE: [MessageHandler(filters.TEXT & ~filters.COMMAND, dogana_date)],
+            DOGANA_TO: [MessageHandler(filters.TEXT & ~filters.COMMAND, dogana_to)],
+            DOGANA_BY: [MessageHandler(filters.TEXT & ~filters.COMMAND, dogana_by)],
+            DOGANA_PUNISH: [CallbackQueryHandler(dogana_punish_selected, pattern=r"^dogana_punish_")],
+        },
+        fallbacks=[CommandHandler("cancel", dogana_cancel)],
+        allow_reentry=True,
+    )
+    application.add_handler(dogana_conv)
+
+    # Діалоги: Заява на неактив (всі)
+    neaktyv_conv = ConversationHandler(
+        entry_points=[CommandHandler("neaktyv", neaktyv_start), MessageHandler(filters.Regex("^📝 Заява на неактив$"), neaktyv_start)],
+        states={
+            NEAKTYV_TO: [MessageHandler(filters.TEXT & ~filters.COMMAND, neaktyv_to)],
+            NEAKTYV_TIME: [MessageHandler(filters.TEXT & ~filters.COMMAND, neaktyv_time)],
+            NEAKTYV_DEPARTMENT: [MessageHandler(filters.TEXT & ~filters.COMMAND, neaktyv_dept)],
+        },
+        fallbacks=[CommandHandler("cancel", neaktyv_cancel)],
+        allow_reentry=True,
+    )
+    application.add_handler(neaktyv_conv)
+
+    # Діалог модерації заяв на неактив
+    neaktyv_moderation_conv = ConversationHandler(
+        entry_points=[CallbackQueryHandler(handle_neaktyv_moderation, pattern=r"^(approve|reject)_neaktyv_\d+$")],
+        states={
+            NEAKTYV_APPROVAL_NAME: [MessageHandler(filters.TEXT & ~filters.COMMAND, process_neaktyv_approval_name)],
+        },
+        fallbacks=[CommandHandler("cancel", cancel_neaktyv_moderation)],
+        allow_reentry=True,
+    )
+    application.add_handler(neaktyv_moderation_conv)
+
+    # Діалог тимчасового перезаповнення профілю
+    refill_conv = ConversationHandler(
+        entry_points=[CommandHandler("refill", refill_start)],
+        states={
+            REFILL_NAME: [MessageHandler(filters.TEXT & ~filters.COMMAND, refill_name)],
+            REFILL_NPU: [CallbackQueryHandler(refill_select_npu, pattern=r"^refill_npu_.+")],
+            REFILL_RANK: [CallbackQueryHandler(refill_select_rank, pattern=r"^refill_rank_\d+")],
+            REFILL_IMAGES: [MessageHandler(filters.TEXT & ~filters.COMMAND, refill_images)],
+        },
+        fallbacks=[CommandHandler("cancel", neaktyv_cancel)],
+        allow_reentry=True,
+    )
+    application.add_handler(refill_conv)
+
+    # Перемикачі меню для адмінів (до загального обробника текстів!)
+    application.add_handler(MessageHandler(filters.Regex("^🛡️ Адмін-команди$"), open_admin_menu))
+    application.add_handler(MessageHandler(filters.Regex("^🔙 Звичайні команди$"), open_user_menu))
+    
+    # Додаткові обробники на випадок проблем з емодзі
+    application.add_handler(MessageHandler(filters.Regex(".*Адмін-команди.*"), open_admin_menu))
+    application.add_handler(MessageHandler(filters.Regex(".*Звичайні команди.*"), open_user_menu))
+
+    # Існуючі текстові повідомлення анкети
+    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_application_text))
+    
+    # Запускаємо бота
+    logger.info("Бот запущено!")
+    
+    # Додаємо обробку помилок для конфліктів
+    async def error_handler(update, context):
+        logger.error(f"Помилка оброблена: {context.error}")
+        # Сохраняем в БД
+        try:
+            err = context.error
+            err_type = type(err).__name__ if err else None
+            message = str(err) if err else None
+            import json
+            update_json = None
             try:
-                await context.bot.send_photo(
-                    chat_id=user.id,
-                    photo=file_id,
-                    caption=f"Фото {i+1}"
-                )
-            except Exception as e:
-                logger.error(f"Failed to send profile photo {file_id} for user {user.id}: {e}")
-    else:
-        await update.message.reply_text("<i>Збережених фото немає.</i>", parse_mode="HTML")
+                if update:
+                    update_json = json.dumps(update.to_dict())
+            except Exception:
+                update_json = None
+            import traceback as tb
+            stack = "".join(tb.format_exception_only(type(err), err)) if err else None
+            log_error(err_type, message, stack, update_json, None)
+            log_action(
+                actor_id=None,
+                actor_username=None,
+                action="error",
+                target_user_id=None,
+                target_username=None,
+                details=f"{err_type}: {message}",
+            )
+        except Exception:
+            pass
+    application.add_handler(CommandHandler("logs", logs_command))
+    application.add_handler(CommandHandler("antispam_top", antispam_top_command))
+    application.add_handler(CommandHandler("export_csv", export_csv_command))
+    application.add_handler(CommandHandler("log_stats", log_stats_command))
+    
+    application.add_error_handler(error_handler)
+    
+    # Запускаємо з обробкою конфліктів
+    try:
+        application.run_polling(
+            allowed_updates=Update.ALL_TYPES,
+            drop_pending_updates=True  # Ігноруємо старі повідомлення
+        )
+    except Exception as e:
+        logger.error(f"Критична помилка при запуску: {e}")
+        raise
 
-
-async def user_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """/user <id|@username> — показати профіль користувача."""
-    if update.effective_user.id not in ADMIN_IDS:
-        await update.message.reply_text("❌ Немає доступу.")
-        return
-    if not context.args:
-        await update.message.reply_text("Використання: /user <id|@username>")
-        return
-    arg = context.args[0]
-    profile = None
-    if arg.isdigit():
-        profile = get_profile(int(arg))
-    else:
-        profile = get_profile_by_username(arg)
-    if not profile:
-        await update.message.reply_text("Не знайдено профіль.")
-        return
-    await update.message.reply_text(_format_profile(profile), parse_mode="HTML", disable_web_page_preview=True)
+if __name__ == '__main__':
+    main()
