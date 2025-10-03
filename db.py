@@ -48,6 +48,17 @@ def init_db():
             );
             """
         )
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS profile_images (
+                id           INTEGER PRIMARY KEY AUTOINCREMENT,
+                telegram_id  INTEGER NOT NULL,
+                url          TEXT NOT NULL,
+                created_at   TEXT DEFAULT (datetime('now')),
+                FOREIGN KEY(telegram_id) REFERENCES profiles(telegram_id) ON DELETE CASCADE
+            );
+            """
+        )
 
 
 def upsert_profile(
@@ -125,3 +136,70 @@ def get_profile(telegram_id: int) -> Optional[Dict[str, Any]]:
             "updated_at",
         ]
         return dict(zip(keys, row))
+
+
+def get_profile_by_username(username: str) -> Optional[Dict[str, Any]]:
+    """Получить профиль по @username (без учёта регистра, @ необязателен)."""
+    uname = (username or "").lstrip("@").strip()
+    if not uname:
+        return None
+    with get_conn() as conn:
+        cur = conn.execute(
+            """
+            SELECT telegram_id, username, full_name_tg, in_game_name, rank, npu_department, role, created_at, updated_at
+            FROM profiles WHERE lower(username) = lower(?)
+            """,
+            (uname,),
+        )
+        row = cur.fetchone()
+        if not row:
+            return None
+        keys = [
+            "telegram_id","username","full_name_tg","in_game_name","rank","npu_department","role","created_at","updated_at",
+        ]
+        return dict(zip(keys, row))
+
+
+def search_profiles(query: str, limit: int = 10) -> list[Dict[str, Any]]:
+    """Полнотекстовый простой поиск по username, full_name_tg, in_game_name (LIKE, без регистра)."""
+    q = f"%{(query or '').strip()}%"
+    if q == "%%":
+        return []
+    with get_conn() as conn:
+        cur = conn.execute(
+            """
+            SELECT telegram_id, username, full_name_tg, in_game_name, rank, npu_department, role, created_at, updated_at
+            FROM profiles
+            WHERE lower(coalesce(username,'')) LIKE lower(?)
+               OR lower(coalesce(full_name_tg,'')) LIKE lower(?)
+               OR lower(coalesce(in_game_name,'')) LIKE lower(?)
+            ORDER BY updated_at DESC
+            LIMIT ?
+            """,
+            (q, q, q, limit),
+        )
+        rows = cur.fetchall()
+        keys = [
+            "telegram_id","username","full_name_tg","in_game_name","rank","npu_department","role","created_at","updated_at",
+        ]
+        return [dict(zip(keys, row)) for row in rows]
+
+
+def replace_profile_images(telegram_id: int, urls: list[str]):
+    """Полностью заменяет список изображений профиля на переданный."""
+    with get_conn() as conn:
+        conn.execute("DELETE FROM profile_images WHERE telegram_id = ?", (telegram_id,))
+        if urls:
+            conn.executemany(
+                "INSERT INTO profile_images(telegram_id, url) VALUES(?, ?)",
+                [(telegram_id, u) for u in urls],
+            )
+
+
+def get_profile_images(telegram_id: int) -> list[str]:
+    with get_conn() as conn:
+        cur = conn.execute(
+            "SELECT url FROM profile_images WHERE telegram_id = ? ORDER BY id ASC",
+            (telegram_id,),
+        )
+        return [r[0] for r in cur.fetchall()]

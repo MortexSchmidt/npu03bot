@@ -13,6 +13,7 @@ from telegram.ext import (
     ConversationHandler,
 )
 from db import init_db, upsert_profile, update_profile_fields, get_profile
+from db import replace_profile_images
 from db import init_db, upsert_profile, update_profile_fields, get_profile
 try:
     from db import get_profile_by_username, search_profiles
@@ -402,6 +403,9 @@ async def dogana_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> i
 
 NEAKTYV_TO, NEAKTYV_TIME, NEAKTYV_DEPARTMENT = range(3)
 
+# Стани заявки на доступ
+APP_WAITING_NAME, APP_WAITING_NPU, APP_WAITING_RANK, APP_WAITING_IMAGES = range(4)
+
 # Константи для модерації заяв
 NEAKTYV_APPROVAL_NAME = range(1)
 
@@ -703,6 +707,22 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     elif query.data.startswith("npu_"):
         npu_code = query.data.split("_")[1]
         await select_npu_department(update, context, npu_code)
+    elif query.data.startswith("rank_"):
+        # Выбор ранга в анкете доступа
+        rank_idx = int(query.data.split("_")[1])
+        if 0 <= rank_idx < len(NPU_RANKS):
+            rank = NPU_RANKS[rank_idx]
+            user_id = update.effective_user.id
+            if user_id in USER_APPLICATIONS:
+                USER_APPLICATIONS[user_id]['rank'] = rank
+                update_profile_fields(user_id, rank=rank)
+                await query.edit_message_text(
+                    f"✅ Звання обрано: {rank}\n\n"
+                    "📝 Крок 3: Надішліть посилання на скріншоти (2 шт)\n\n"
+                    "Потрібні: посвідчення та планшет. Розмістіть на imgbb/imgur/postimg та надішліть прямі URL, кожен з нового рядка."
+                )
+                context.user_data['step'] = 'waiting_image_urls'
+                USER_APPLICATIONS[user_id]['step'] = 'waiting_image_urls'
     
     elif query.data.startswith("approve_"):
         user_id = int(query.data.split("_")[1])
@@ -799,22 +819,23 @@ async def select_npu_department(update: Update, context: ContextTypes.DEFAULT_TY
     USER_APPLICATIONS[user_id]['npu_department'] = NPU_DEPARTMENTS[npu_code]
     # Оновлюємо підрозділ у профілі
     update_profile_fields(user_id, npu_department=NPU_DEPARTMENTS[npu_code])
-    USER_APPLICATIONS[user_id]['step'] = 'waiting_image_urls'
-    context.user_data['step'] = 'waiting_image_urls'
-    
+    USER_APPLICATIONS[user_id]['step'] = 'waiting_rank'
+    context.user_data['step'] = 'waiting_rank'
+
+    # Показать выбор звания
+    rank_buttons = []
+    row = []
+    for idx, rank in enumerate(NPU_RANKS):
+        row.append(InlineKeyboardButton(rank, callback_data=f"rank_{idx}"))
+        if len(row) == 2:
+            rank_buttons.append(row)
+            row = []
+    if row:
+        rank_buttons.append(row)
     await query.edit_message_text(
         f"✅ Управління НПУ обрано: {NPU_DEPARTMENTS[npu_code]}\n\n"
-        "📝 Крок 3: Надішліть посилання на скріншоти\n\n"
-        "Потрібні документи:\n"
-        "1. Скріншот посвідчення\n"
-        "2. Скріншот планшету\n\n"
-        "📋 Інструкція:\n"
-        "• Завантажте скріншоти на imgbb.com, imgur.com або подібний сервіс\n"
-        "• Скопіюйте прямі посилання на зображення\n"
-        "• Надішліть їх одним повідомленням, кожне з нового рядка\n\n"
-        "Приклад:\n"
-        "https://i.ibb.co/example1.jpg\n"
-        "https://i.ibb.co/example2.png"
+        "📝 Крок 3: Оберіть ваше звання",
+        reply_markup=InlineKeyboardMarkup(rank_buttons)
     )
 
 async def handle_image_urls_application(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -880,6 +901,8 @@ async def handle_image_urls_application(update: Update, context: ContextTypes.DE
 
     # Зберігаємо посилання
     user_data['image_urls'] = valid_urls
+    # Сохраняем изображения в БД
+    replace_profile_images(user_id, valid_urls)
     
     await finalize_application(update, context, user_id)
 
@@ -1074,6 +1097,21 @@ async def admin_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         f"Заявок в очікуванні: {pending_count}"
     )
 
+async def broadcast_fill_profiles(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Команда для адмінів: попросити заповнити профілі (інструкція)."""
+    if update.effective_user.id not in ADMIN_IDS:
+        await update.message.reply_text("❌ У вас немає доступу до цієї команди.")
+        return
+    text = (
+        "📣 <b>Шановні учасники!</b>\n\n"
+        "Для оновлення бази, просимо кожного заповнити дані через бота:\n\n"
+        "1) Відкрийте діалог з ботом та натисніть /start\n"
+        "2) Пройдіть анкету доступу: введіть ім'я та прізвище, оберіть управління НПУ, оберіть <b>своє звання</b>\n"
+        "3) Надішліть 2 посилання на скріншоти (посвідчення та планшет) з imgbb/imgur/postimg (прямі URL)\n\n"
+        "Дякуємо за оперативність!"
+    )
+    await update.message.reply_text(text, parse_mode="HTML")
+
 def _format_profile(profile: dict) -> str:
     return (
         "👤 <b>Профіль</b>\n\n"
@@ -1159,6 +1197,7 @@ def main() -> None:
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CommandHandler("me", me_command))
     application.add_handler(CommandHandler("admin", admin_command))
+    application.add_handler(CommandHandler("broadcast_fill", broadcast_fill_profiles))
     application.add_handler(CommandHandler("user", user_lookup_command))
     application.add_handler(CommandHandler("find", find_profiles_command))
 
