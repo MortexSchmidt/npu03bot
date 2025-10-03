@@ -200,25 +200,80 @@ async def dogana_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> in
         await update.message.reply_text("❌ У вас немає доступу до цієї дії.")
         return ConversationHandler.END
     context.user_data["dogana_form"] = {}
-    await update.message.reply_text("Введіть, будь ласка, опис порушення (Порушення):", reply_markup=ReplyKeyboardRemove())
+    await update.message.reply_text(
+        "📝 ОФОРМЛЕННЯ ДОГАНИ\n\n"
+        "🔸 Крок 1 з 5: Опис порушення\n\n"
+        "Введіть, будь ласка, детальний опис порушення:",
+        reply_markup=ReplyKeyboardRemove()
+    )
     return DOGANA_OFFENSE
 
 async def dogana_offense(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     context.user_data["dogana_form"]["offense"] = update.message.text.strip()
-    await update.message.reply_text("Вкажіть дату порушення (формат довільний):")
+    await update.message.reply_text(
+        "📝 ОФОРМЛЕННЯ ДОГАНИ\n\n"
+        "🔸 Крок 2 з 5: Дата порушення\n\n"
+        "Вкажіть дату порушення у форматі ДД.ММ.РРРР або ДД.ММ:\n"
+        "Приклад: 01.10.2025 або 01.10"
+    )
     return DOGANA_DATE
 
 async def dogana_date(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    context.user_data["dogana_form"]["date"] = update.message.text.strip()
-    await update.message.reply_text("Кому було видано покарання (ПІБ/нік/ID):")
+    date_text = update.message.text.strip()
+    
+    # Перевірка формату дати (цифри та точки)
+    if not re.match(r'^\d{1,2}\.\d{1,2}(\.\d{4})?$', date_text):
+        await update.message.reply_text(
+            "❌ Невірний формат дати!\n\n"
+            "Використовуйте формат:\n"
+            "• ДД.ММ.РРРР (наприклад: 01.10.2025)\n"
+            "• ДД.ММ (наприклад: 01.10)\n\n"
+            "Спробуйте ще раз:"
+        )
+        return DOGANA_DATE
+    
+    context.user_data["dogana_form"]["date"] = date_text
+    await update.message.reply_text(
+        "📝 ОФОРМЛЕННЯ ДОГАНИ\n\n"
+        "🔸 Крок 3 з 5: Порушник\n\n"
+        "Введіть ім'я та прізвище особи, якій видається догана:\n"
+        "(Тільки українською мовою, повне ім'я та прізвище)"
+    )
     return DOGANA_TO
 
 async def dogana_to(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    context.user_data["dogana_form"]["to_whom"] = update.message.text.strip()
+    name_text = update.message.text.strip()
+    
+    # Перевірка українських символів та формату імені
+    if not re.match(r'^[А-ЯІЇЄа-яіїє\'\-\s\.]+$', name_text):
+        await update.message.reply_text(
+            "❌ Ім'я та прізвище мають бути українською мовою!\n\n"
+            "Приклади правильного формату:\n"
+            "✅ Олександр Іваненко\n"
+            "✅ Марія Петренко-Коваленко\n"
+            "✅ Анна-Марія Сидоренко\n\n"
+            "Спробуйте ще раз:"
+        )
+        return DOGANA_TO
+    
+    # Перевірка що є мінімум 2 слова
+    words = name_text.split()
+    if len(words) < 2:
+        await update.message.reply_text(
+            "❌ Потрібно вказати ім'я та прізвище!\n\n"
+            "Приклад: Олександр Іваненко\n\n"
+            "Спробуйте ще раз:"
+        )
+        return DOGANA_TO
+    
+    context.user_data["dogana_form"]["to_whom"] = name_text
     # Пропонуємо автозаповнення хто видав
     admin_name = f"{update.effective_user.first_name} {update.effective_user.last_name or ''}".strip()
     await update.message.reply_text(
-        "Хто видав покарання (можете змінити або залишити як є):\n" f"За замовчуванням: {admin_name}"
+        "📝 ОФОРМЛЕННЯ ДОГАНИ\n\n"
+        "🔸 Крок 4 з 5: Хто видав\n\n"
+        f"За замовчуванням: {admin_name}\n\n"
+        "Введіть ім'я та прізвище особи, яка видає догану, або залиште як є:"
     )
     context.user_data["dogana_form"]["default_by"] = admin_name
     return DOGANA_BY
@@ -235,7 +290,12 @@ async def dogana_by(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
             InlineKeyboardButton("Попередження", callback_data="dogana_punish_poperedzhennya"),
         ]
     ])
-    await update.message.reply_text("Оберіть вид покарання:", reply_markup=kb)
+    await update.message.reply_text(
+        "📝 ОФОРМЛЕННЯ ДОГАНИ\n\n"
+        "🔸 Крок 5 з 5: Вид покарання\n\n"
+        "Оберіть вид покарання:",
+        reply_markup=kb
+    )
     return DOGANA_PUNISH
 
 async def dogana_punish_selected(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
@@ -245,12 +305,13 @@ async def dogana_punish_selected(update: Update, context: ContextTypes.DEFAULT_T
     form = context.user_data.get("dogana_form", {})
 
     text = (
-        "� ДОГАНА\n\n"
+        "⚠️ ДОГАНА\n\n"
         f"1. Порушення: {form.get('offense')}\n"
         f"2. Дата порушення: {form.get('date')}\n"
         f"3. Кому видано: {form.get('to_whom')}\n"
         f"4. Хто видав: {form.get('by_whom')}\n"
-        f"5. Покарання: {kind}"
+        f"5. Покарання: {kind}\n\n"
+        f"Від: @{query.from_user.username if query.from_user.username else query.from_user.first_name}"
     )
     try:
         await context.bot.send_message(
