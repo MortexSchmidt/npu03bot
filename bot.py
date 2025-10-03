@@ -13,7 +13,12 @@ from telegram.ext import (
     ConversationHandler,
 )
 from db import init_db, upsert_profile, update_profile_fields, get_profile
-from db import init_db, upsert_profile, update_profile_fields, get_profile, get_profile_by_username, search_profiles
+from db import init_db, upsert_profile, update_profile_fields, get_profile
+try:
+    from db import get_profile_by_username, search_profiles
+except ImportError:
+    get_profile_by_username = None  # type: ignore
+    search_profiles = None  # type: ignore
 
 # Налаштування логування
 logging.basicConfig(
@@ -1087,6 +1092,9 @@ async def user_lookup_command(update: Update, context: ContextTypes.DEFAULT_TYPE
     if update.effective_user.id not in ADMIN_IDS:
         await update.message.reply_text("❌ Немає доступу.")
         return
+    if get_profile_by_username is None:
+        await update.message.reply_text("⚠️ Функція пошуку за username тимчасово недоступна на цьому деплої.")
+        return
     if not context.args:
         await update.message.reply_text("Використання: /user <telegram_id | @username>")
         return
@@ -1105,6 +1113,9 @@ async def find_profiles_command(update: Update, context: ContextTypes.DEFAULT_TY
     """/find <текст> — пошук профілів по username/Ім'я TG/Ім'я у грі (тільки адмінам)."""
     if update.effective_user.id not in ADMIN_IDS:
         await update.message.reply_text("❌ Немає доступу.")
+        return
+    if search_profiles is None:
+        await update.message.reply_text("⚠️ Пошук профілів тимчасово недоступний на цьому деплої.")
         return
     q = " ".join(context.args).strip()
     if not q:
