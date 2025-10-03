@@ -187,7 +187,7 @@ def init_db():
                 current_rank          TEXT NOT NULL,
                 target_rank           TEXT NOT NULL,
                 workbook_image_id     TEXT NOT NULL,
-                work_evidence_image_id TEXT NOT NULL,
+                work_evidence_image_ids TEXT NOT NULL,
                 status                TEXT CHECK(status IN ('pending','approved','rejected')) DEFAULT 'pending',
                 moderator_id          INTEGER,
                 moderator_username    TEXT,
@@ -680,7 +680,7 @@ def insert_promotion_request(
     current_rank: str,
     target_rank: str,
     workbook_image_id: str,
-    work_evidence_image_id: str,
+    work_evidence_image_ids: str,
 ) -> int:
     """Создать заявку на повышение. Возвращает ID заявки."""
     with get_conn() as conn:
@@ -688,11 +688,11 @@ def insert_promotion_request(
             """
             INSERT INTO promotion_requests (
                 requester_id, requester_username, requester_name,
-                current_rank, target_rank, workbook_image_id, work_evidence_image_id
+                current_rank, target_rank, workbook_image_id, work_evidence_image_ids
             ) VALUES (?, ?, ?, ?, ?, ?, ?)
             """,
             (requester_id, requester_username, requester_name, 
-             current_rank, target_rank, workbook_image_id, work_evidence_image_id),
+             current_rank, target_rank, workbook_image_id, work_evidence_image_ids),
         )
         return cur.lastrowid
 
@@ -703,7 +703,7 @@ def get_promotion_request(request_id: int) -> Optional[Dict[str, Any]]:
         cur = conn.execute(
             """
             SELECT id, requester_id, requester_username, requester_name,
-                   current_rank, target_rank, workbook_image_id, work_evidence_image_id,
+                   current_rank, target_rank, workbook_image_id, work_evidence_image_ids,
                    status, moderator_id, moderator_username, moderator_rank,
                    reject_reason, decided_at, created_at
             FROM promotion_requests
@@ -721,7 +721,7 @@ def get_promotion_request(request_id: int) -> Optional[Dict[str, Any]]:
                 "current_rank": row[4],
                 "target_rank": row[5],
                 "workbook_image_id": row[6],
-                "work_evidence_image_id": row[7],
+                "work_evidence_image_ids": row[7],
                 "status": row[8],
                 "moderator_id": row[9],
                 "moderator_username": row[10],
