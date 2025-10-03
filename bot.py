@@ -2,8 +2,8 @@ import os
 import logging
 import re
 import time
+import traceback
 from collections import deque
-import requests
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, ReplyKeyboardMarkup, ReplyKeyboardRemove
 from telegram.ext import (
     Application,
@@ -290,52 +290,6 @@ def display_ranked_name(rank: str | None, name: str) -> str:
     """Повертає відформатоване ім'я з опціональним званням."""
     return f"{rank} {name}".strip() if rank else name
 
-def is_valid_image_url(url: str) -> bool:
-    """Перевіряє, чи є URL валідним посиланням на зображення"""
-    # Базова перевірка формату URL
-    url_pattern = re.compile(
-        r'^https?://'  # http:// або https://
-        r'(?:(?:[A-Z0-9](?:[A-Z0-9-]{0,61}[A-Z0-9])?\.)+[A-Z]{2,6}\.?|'  # домен
-        r'localhost|'  # localhost
-        r'\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})'  # IP
-        r'(?::\d+)?'  # опціональний порт
-        r'(?:/?|[/?]\S+)$', re.IGNORECASE)
-    
-    if not url_pattern.match(url):
-        return False
-    
-    # Перевіряємо розширення файлу
-    image_extensions = ('.jpg', '.jpeg', '.png', '.gif', '.bmp', '.webp')
-    if any(url.lower().endswith(ext) for ext in image_extensions):
-        return True
-    
-    # Перевіряємо популярні хостинги зображень
-    image_hosts = ['imgbb.com', 'imgur.com', 'postimg.cc', 'ibb.co', 'imageban.ru', 'radikal.ru']
-    if any(host in url.lower() for host in image_hosts):
-        return True
-    
-    # Додаткова перевірка через HTTP HEAD запит
-    try:
-        response = requests.head(url, timeout=5)
-        content_type = response.headers.get('content-type', '')
-        return content_type.startswith('image/')
-    except:
-        return False
-
-def validate_image_urls(urls: list) -> tuple:
-    """Валідує список URL зображень"""
-    valid_urls = []
-    invalid_urls = []
-    
-    for url in urls:
-        url = url.strip()
-        if is_valid_image_url(url):
-            valid_urls.append(url)
-        else:
-            invalid_urls.append(url)
-    
-    return valid_urls, invalid_urls
-
 # ===== Тимчасова команда для повторного заповнення профілю =====
 async def refill_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """Старт тимчасового майстра перезаповнення профілю для вже зареєстрованих."""
@@ -446,14 +400,7 @@ async def refill_images(update: Update, context: ContextTypes.DEFAULT_TYPE) -> i
         await update.message.reply_text(
             "❌ Потрібно мінімум 2 посилання на зображення. Надішліть ще раз.")
         return REFILL_IMAGES
-    valid, invalid = validate_image_urls(urls)
-    if invalid or len(valid) < 2:
-        bad = "\n".join(f"• {u}" for u in invalid) if invalid else ""
-        await update.message.reply_text(
-            ("❌ Деякі посилання некоректні:\n" + bad + "\n\n" if bad else "") +
-            "Надішліть 2+ валідних URL (imgbb/imgur/postimg).")
-        return REFILL_IMAGES
-
+    
     form = context.user_data.get("refill_form", {})
     user = update.effective_user
 
@@ -465,7 +412,7 @@ async def refill_images(update: Update, context: ContextTypes.DEFAULT_TYPE) -> i
             npu_department=form.get("npu_department"),
             rank=form.get("rank"),
         )
-        replace_profile_images(user.id, valid)
+        replace_profile_images(user.id, urls)
         # Логи оновлення профілю та дії
         try:
             log_profile_update(
@@ -475,7 +422,7 @@ async def refill_images(update: Update, context: ContextTypes.DEFAULT_TYPE) -> i
                     "npu_department": form.get("npu_department"),
                     "rank": form.get("rank"),
                 },
-                images_count=len(valid),
+                images_count=len(urls),
                 source="refill",
             )
             log_action(
@@ -484,7 +431,7 @@ async def refill_images(update: Update, context: ContextTypes.DEFAULT_TYPE) -> i
                 action="profile_refill",
                 target_user_id=user.id,
                 target_username=update.effective_user.username if update.effective_user else None,
-                details=f"images={len(valid)}",
+                details=f"images={len(urls)}",
             )
         except Exception:
             pass
@@ -500,7 +447,7 @@ async def refill_images(update: Update, context: ContextTypes.DEFAULT_TYPE) -> i
         f"Ім'я у грі: {form.get('in_game_name')}\n"
         f"Підрозділ: {form.get('npu_department')}\n"
         f"Звання: {form.get('rank')}\n"
-        f"Фото: {len(valid)} посилання"
+        f"Фото: {len(urls)} посилання"
         "</blockquote>\n\n"
         "Дякуємо! Ця команда є <i>тимчасовою</i> і буде видалена після міграції."
     )
@@ -1411,29 +1358,10 @@ async def handle_image_urls_application(update: Update, context: ContextTypes.DE
         )
         return
     
-    # Валідуємо URL
-    valid_urls, invalid_urls = validate_image_urls(urls)
-    
-    if invalid_urls:
-        invalid_list = '\n'.join(f"• {url}" for url in invalid_urls)
-        await update.message.reply_text(
-            f"❌ Деякі посилання некоректні:\n\n{invalid_list}\n\n"
-            "Будь ласка, перевірте посилання та надішліть тільки валідні URL зображень.\n"
-            "Підтримуються: imgbb.com, imgur.com, postimg.cc та інші."
-        )
-        return
-    
-    if len(valid_urls) < 2:
-        await update.message.reply_text(
-            "❌ Потрібно мінімум 2 валідних посилання на зображення.\n"
-            "Будь ласка, завантажте скріншоти на imgbb.com або imgur.com та надішліть прямі посилання."
-        )
-        return
-
-    # Зберігаємо посилання
-    user_data['image_urls'] = valid_urls
+    # Зберігаємо посилання без валідації
+    user_data['image_urls'] = urls
     # Сохраняем изображения в БД
-    replace_profile_images(user_id, valid_urls)
+    replace_profile_images(user_id, urls)
     
     await finalize_application(update, context, user_id)
 
