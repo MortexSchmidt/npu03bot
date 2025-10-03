@@ -1,4 +1,5 @@
 import logging
+import os
 import re
 import requests
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
@@ -12,8 +13,10 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 # Конфігурація для локального тестування
-# ВАЖЛИВО: НЕ ВИКОРИСТОВУЙТЕ ЦЕ НА ПРОДАКШЕНІ!
-BOT_TOKEN = "7652276422:AAGC-z7Joic3m7cFKXVdafvKvaqTZ3VZsBo"  # Ваш токен для тестування
+# Токен беремо з оточення (наприклад, через .env); не хардкодимо!
+BOT_TOKEN = os.getenv("BOT_TOKEN", "")
+if not BOT_TOKEN:
+    raise RuntimeError("Не задано BOT_TOKEN у змінних оточення для локального тесту.")
 ADMIN_IDS = [1648720935]  # Ваш ID адміністратора
 GROUP_CHAT_ID = None  # Для локального тесту - отключено создание ссылок
 GROUP_INVITE_LINK = "https://t.me/+RItcaiRa-KU5ZThi"  # Основна ссылка для тестів

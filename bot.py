@@ -24,7 +24,17 @@ from db import (
     insert_access_application,
     decide_access_application,
 )
-from db import init_db, upsert_profile, update_profile_fields, get_profile
+from db import log_action, log_profile_update, log_antispam_event
+from db import (
+    log_action,
+    log_profile_update,
+    log_antispam_event,
+    query_action_logs,
+    query_antispam_top,
+    export_table_csv,
+    logs_stats,
+    log_error,
+)
 try:
     from db import get_profile_by_username, search_profiles
 except ImportError:
@@ -135,6 +145,12 @@ async def anti_spam_message(update: Update, context: ContextTypes.DEFAULT_TYPE) 
         return
     limited, retry = _rate_limited(context, user_id, "message")
     if limited:
+        # Лог події антиспаму (повідомлення)
+        try:
+            if update.effective_user:
+                log_antispam_event(update.effective_user.id, "message", retry_after=retry)
+        except Exception:
+            pass
         if _should_warn(context, user_id):
             try:
                 await update.effective_message.reply_text(
@@ -155,6 +171,11 @@ async def anti_spam_callback(update: Update, context: ContextTypes.DEFAULT_TYPE)
         return
     limited, retry = _rate_limited(context, user_id, "callback")
     if limited:
+        # Лог події антиспаму (клік)
+        try:
+            log_antispam_event(user_id, "callback", retry_after=retry)
+        except Exception:
+            pass
         try:
             await query.answer(f"⏳ Повільніше, зачекайте ~{int(retry)+1} сек.", show_alert=False)
         except Exception:
@@ -445,6 +466,28 @@ async def refill_images(update: Update, context: ContextTypes.DEFAULT_TYPE) -> i
             rank=form.get("rank"),
         )
         replace_profile_images(user.id, valid)
+        # Логи оновлення профілю та дії
+        try:
+            log_profile_update(
+                user_id=user.id,
+                fields={
+                    "in_game_name": form.get("in_game_name"),
+                    "npu_department": form.get("npu_department"),
+                    "rank": form.get("rank"),
+                },
+                images_count=len(valid),
+                source="refill",
+            )
+            log_action(
+                actor_id=user.id,
+                actor_username=update.effective_user.username if update.effective_user else None,
+                action="profile_refill",
+                target_user_id=user.id,
+                target_username=update.effective_user.username if update.effective_user else None,
+                details=f"images={len(valid)}",
+            )
+        except Exception:
+            pass
     except Exception as e:
         logger.error(f"refill save failed: {e}")
         await update.message.reply_text("⚠️ Сталася помилка при збереженні. Спробуйте ще раз пізніше.")
@@ -503,6 +546,28 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         full_name_tg=tg_fullname or None,
         role='admin' if user.id in ADMIN_IDS else 'user',
     )
+    # Лог події старту та знімок оновлення профілю
+    try:
+        log_profile_update(
+            user_id=user.id,
+            fields={
+                "username": user.username or None,
+                "full_name_tg": tg_fullname or None,
+                "role": ('admin' if user.id in ADMIN_IDS else 'user'),
+            },
+            images_count=None,
+            source="start",
+        )
+        log_action(
+            actor_id=user.id,
+            actor_username=user.username,
+            action="start",
+            target_user_id=user.id,
+            target_username=user.username,
+            details=None,
+        )
+    except Exception:
+        pass
 
     # Перевірка членства у групі
     user_is_member = False
@@ -700,6 +765,17 @@ async def dogana_punish_selected(update: Update, context: ContextTypes.DEFAULT_T
                 issued_by_user_id=query.from_user.id if query and query.from_user else None,
                 issued_by_username=(query.from_user.username if query and query.from_user else None),
             )
+            try:
+                log_action(
+                    actor_id=query.from_user.id if query and query.from_user else None,
+                    actor_username=query.from_user.username if query and query.from_user else None,
+                    action="warning_issued",
+                    target_user_id=None,
+                    target_username=None,
+                    details=f"kind={kind}; to={form.get('to_whom')}; rank={form.get('rank_to')}; date={form.get('date')}",
+                )
+            except Exception:
+                pass
         except Exception as dbe:
             logger.error(f"DB log warning failed: {dbe}")
 
@@ -852,6 +928,18 @@ async def neaktyv_dept(update: Update, context: ContextTypes.DEFAULT_TYPE) -> in
         )
         # збережемо id заявки, щоб модераторське рішення оновило саме її
         context.bot_data[f"neaktyv_req_id_{user_id}"] = request_id
+        # Загальний лог створення заявки
+        try:
+            log_action(
+                actor_id=user_id,
+                actor_username=username,
+                action="neaktyv_request_created",
+                target_user_id=None,
+                target_username=None,
+                details=f"request_id={request_id}; to={form.get('to_whom')}; duration={form.get('duration')}; dept={form.get('department')}",
+            )
+        except Exception:
+            pass
     except Exception as dbe:
         logger.error(f"DB insert neaktyv failed: {dbe}")
 
@@ -1003,6 +1091,17 @@ async def process_neaktyv_approval_name(update: Update, context: ContextTypes.DE
                         moderator_name=name,
                         moderator_user_id=update.effective_user.id,
                     )
+                    try:
+                        log_action(
+                            actor_id=update.effective_user.id,
+                            actor_username=update.effective_user.username,
+                            action="neaktyv_approved",
+                            target_user_id=user_id,
+                            target_username=None,
+                            details=f"request_id={req_id}; moderator={name}",
+                        )
+                    except Exception:
+                        pass
             except Exception as dbe:
                 logger.error(f"DB decide neaktyv approve failed: {dbe}")
             await update.message.reply_text(f"✅ Заяву одобрено та опубліковано в групі!")
@@ -1041,6 +1140,17 @@ async def process_neaktyv_approval_name(update: Update, context: ContextTypes.DE
                         moderator_name=name,
                         moderator_user_id=update.effective_user.id,
                     )
+                    try:
+                        log_action(
+                            actor_id=update.effective_user.id,
+                            actor_username=update.effective_user.username,
+                            action="neaktyv_rejected",
+                            target_user_id=user_id,
+                            target_username=None,
+                            details=f"request_id={req_id}; moderator={name}",
+                        )
+                    except Exception:
+                        pass
             except Exception as dbe:
                 logger.error(f"DB decide neaktyv reject failed: {dbe}")
             await update.message.reply_text(f"❌ Заяву відхилено.")
@@ -1094,6 +1204,10 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
             if user_id in USER_APPLICATIONS:
                 USER_APPLICATIONS[user_id]['rank'] = rank
                 update_profile_fields(user_id, rank=rank)
+                try:
+                    log_profile_update(user_id=user_id, fields={"rank": rank}, images_count=None, source="apply")
+                except Exception:
+                    pass
                 await query.edit_message_text(
                     f"✅ Звання обрано: {rank}\n\n"
                     "📝 Крок 3: Надішліть посилання на скріншоти (2 шт)\n\n"
@@ -1161,6 +1275,10 @@ async def handle_name_input(update: Update, context: ContextTypes.DEFAULT_TYPE) 
     USER_APPLICATIONS[user_id]['name'] = name_input
     # Зберігаємо ім'я у грі в профіль
     update_profile_fields(user_id, in_game_name=name_input)
+    try:
+        log_profile_update(user_id=user_id, fields={"in_game_name": name_input}, images_count=None, source="apply")
+    except Exception:
+        pass
     context.user_data['step'] = 'waiting_npu' # FIX: Update user_data context
     
     # Створюємо кнопки для вибору НПУ
@@ -1197,6 +1315,10 @@ async def select_npu_department(update: Update, context: ContextTypes.DEFAULT_TY
     USER_APPLICATIONS[user_id]['npu_department'] = NPU_DEPARTMENTS[npu_code]["title"]
     # Оновлюємо підрозділ у профілі
     update_profile_fields(user_id, npu_department=NPU_DEPARTMENTS[npu_code]["title"])
+    try:
+        log_profile_update(user_id=user_id, fields={"npu_department": NPU_DEPARTMENTS[npu_code]["title"]}, images_count=None, source="apply")
+    except Exception:
+        pass
     USER_APPLICATIONS[user_id]['step'] = 'waiting_rank'
     context.user_data['step'] = 'waiting_rank'
 
@@ -1315,6 +1437,28 @@ async def finalize_application(update: Update, context: ContextTypes.DEFAULT_TYP
             rank=USER_APPLICATIONS[user_id].get('rank'),
             images=user_data['image_urls'],
         )
+        try:
+            # Знімок оновлення профілю та лог дії
+            log_profile_update(
+                user_id=user.id,
+                fields={
+                    "in_game_name": user_data.get('name'),
+                    "npu_department": user_data.get('npu_department'),
+                    "rank": USER_APPLICATIONS[user_id].get('rank'),
+                },
+                images_count=len(user_data.get('image_urls') or []),
+                source="apply",
+            )
+            log_action(
+                actor_id=user.id,
+                actor_username=user.username,
+                action="access_application_submitted",
+                target_user_id=user.id,
+                target_username=user.username,
+                details=f"images={len(user_data.get('image_urls') or [])}",
+            )
+        except Exception:
+            pass
     except Exception as dbe:
         logger.error(f"DB insert access_application failed: {dbe}")
 
@@ -1428,6 +1572,18 @@ async def approve_request(update: Update, context: ContextTypes.DEFAULT_TYPE, us
             )
         except Exception as dbe:
             logger.error(f"DB decide access approve failed: {dbe}")
+        # Загальний лог рішення
+        try:
+            log_action(
+                actor_id=update.effective_user.id,
+                actor_username=update.effective_user.username,
+                action="access_approved",
+                target_user_id=user.id,
+                target_username=user.username,
+                details=f"invite_link={invite_link}",
+            )
+        except Exception:
+            pass
         
         logger.info(f"Заявку користувача {user_display_name} ({user.id}) схвалено, створено посилання: {invite_link}")
         
@@ -1464,6 +1620,17 @@ async def approve_request(update: Update, context: ContextTypes.DEFAULT_TYPE, us
             )
         except Exception as dbe:
             logger.error(f"DB decide access approve(fallback) failed: {dbe}")
+        try:
+            log_action(
+                actor_id=update.effective_user.id,
+                actor_username=update.effective_user.username,
+                action="access_approved_fallback",
+                target_user_id=user.id,
+                target_username=user.username,
+                details=f"invite_link={GROUP_INVITE_LINK}",
+            )
+        except Exception:
+            pass
     
     # Видаляємо заявку зі списку очікування
     del PENDING_REQUESTS[user_id]
@@ -1509,6 +1676,17 @@ async def reject_request(update: Update, context: ContextTypes.DEFAULT_TYPE, use
         )
     except Exception as dbe:
         logger.error(f"DB decide access reject failed: {dbe}")
+    try:
+        log_action(
+            actor_id=update.effective_user.id,
+            actor_username=update.effective_user.username,
+            action="access_rejected",
+            target_user_id=user.id,
+            target_username=user.username,
+            details=None,
+        )
+    except Exception:
+        pass
     
     # Видаляємо заявку зі списку очікування
     del PENDING_REQUESTS[user_id]
@@ -1526,6 +1704,121 @@ async def admin_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         f"📊 Статистика:\n\n"
         f"Заявок в очікуванні: {pending_count}"
     )
+
+async def logs_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Адм-команда: последние N действий, фильтры по дате/актеру/действию.\n
+    Использование: /logs [limit] [action=<x>] [actor_id=<id>] [actor=@name] [from=YYYY-MM-DD] [to=YYYY-MM-DD]
+    """
+    if update.effective_user.id not in ADMIN_IDS:
+        await update.message.reply_text("❌ Немає доступу.")
+        return
+    args = context.args or []
+    limit = 50
+    kw = {"actor_id": None, "actor_username": None, "action": None, "date_from": None, "date_to": None}
+    for a in args:
+        if a.isdigit():
+            limit = max(1, min(500, int(a)))
+        elif a.startswith("action="):
+            kw["action"] = a.split("=",1)[1]
+        elif a.startswith("actor_id="):
+            try:
+                kw["actor_id"] = int(a.split("=",1)[1])
+            except Exception:
+                pass
+        elif a.startswith("actor="):
+            kw["actor_username"] = a.split("=",1)[1]
+        elif a.startswith("from="):
+            kw["date_from"] = a.split("=",1)[1]
+        elif a.startswith("to="):
+            kw["date_to"] = a.split("=",1)[1]
+    rows = query_action_logs(limit=limit, **kw)
+    if not rows:
+        await update.message.reply_text("Порожньо.")
+        return
+    lines = []
+    for r in rows:
+        actor = f"{r['actor_id']} (@{r['actor_username']})" if r.get('actor_username') else str(r.get('actor_id'))
+        target = (f" -> {r['target_user_id']} (@{r['target_username']})" if r.get('target_user_id') else "")
+        det = f" | {r['details']}" if r.get('details') else ""
+        lines.append(f"[{r['created_at']}] {actor}: {r['action']}{target}{det}")
+    text = "\n".join(lines[:1000])
+    await update.message.reply_text(f"<b>Останні дії ({len(rows)}):</b>\n\n<code>{text}</code>", parse_mode="HTML", disable_web_page_preview=True)
+
+async def antispam_top_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Адм-команда: топ по антиспаму.\n
+    Использование: /antispam_top [days=7] [kind=message|callback] [limit=10]
+    """
+    if update.effective_user.id not in ADMIN_IDS:
+        await update.message.reply_text("❌ Немає доступу.")
+        return
+    days = 7
+    kind = None
+    limit = 10
+    for a in context.args or []:
+        if a.startswith("days="):
+            try: days = max(1, int(a.split("=",1)[1]));
+            except Exception: pass
+        elif a.startswith("kind="):
+            k = a.split("=",1)[1]
+            if k in ("message","callback"): kind = k
+        elif a.startswith("limit="):
+            try: limit = max(1, min(50, int(a.split("=",1)[1])));
+            except Exception: pass
+    rows = query_antispam_top(days=days, kind=kind, limit=limit)
+    if not rows:
+        await update.message.reply_text("За період порожньо.")
+        return
+    lines = [f"{i+1}. {r['user_id']} — {r['count']}" for i,r in enumerate(rows)]
+    await update.message.reply_text("<b>Топ антиспаму</b>\n"+"\n".join(lines), parse_mode="HTML")
+
+async def export_csv_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Адм-команда: експорта CSV.\n
+    Использование: /export_csv <table> [days=N]
+    Допустимые таблицы: profiles, profile_images, warnings, neaktyv_requests, access_applications, action_logs, profile_updates, antispam_events, error_logs
+    """
+    if update.effective_user.id not in ADMIN_IDS:
+        await update.message.reply_text("❌ Немає доступу.")
+        return
+    if not context.args:
+        await update.message.reply_text("Використання: /export_csv <table> [days=N]")
+        return
+    table = context.args[0]
+    days = None
+    if len(context.args) > 1 and context.args[1].startswith("days="):
+        try:
+            days = int(context.args[1].split("=",1)[1])
+        except Exception:
+            days = None
+    try:
+        filename, content = export_table_csv(table, days=days)
+    except Exception as e:
+        await update.message.reply_text(f"❌ Помилка: {e}")
+        return
+    await update.message.reply_document(document=(filename, content), caption=f"Експорт {table}{' за ' + str(days) + ' дн.' if days else ''}")
+
+async def log_stats_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Адм-команда: сводные показатели.\n
+    Использование: /log_stats [days=7]
+    """
+    if update.effective_user.id not in ADMIN_IDS:
+        await update.message.reply_text("❌ Немає доступу.")
+        return
+    days = 7
+    for a in context.args or []:
+        if a.startswith("days="):
+            try: days = max(1, int(a.split("=",1)[1]));
+            except Exception: pass
+    stats = logs_stats(days=days)
+    parts = ["<b>Сводка</b>"]
+    parts.append("\nДії по типам:")
+    for k,v in stats.get("actions_by_type", []):
+        parts.append(f"• {k}: {v}")
+    parts.append(f"\nАнтиспам (всього): {stats.get('antispam_total', 0)}")
+    if stats.get("antispam_by_kind"):
+        parts.append("Антиспам по типам:")
+        for k,v in stats["antispam_by_kind"]:
+            parts.append(f"• {k}: {v}")
+    await update.message.reply_text("\n".join(parts), parse_mode="HTML")
 
 async def broadcast_fill_profiles(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Команда для адмінів: попросити заповнити профілі (інструкція)."""
@@ -1620,6 +1913,17 @@ async def handle_admin_user_action(update: Update, context: ContextTypes.DEFAULT
             await context.bot.ban_chat_member(chat_id=chat_id, user_id=target_id)
             await context.bot.unban_chat_member(chat_id=chat_id, user_id=target_id)
             await query.edit_message_text(f"🚫 Користувача {target_id} вигнано з групи.")
+            try:
+                log_action(
+                    actor_id=query.from_user.id,
+                    actor_username=query.from_user.username,
+                    action="kick_from_group",
+                    target_user_id=target_id,
+                    target_username=None,
+                    details=f"chat_id={chat_id}",
+                )
+            except Exception:
+                pass
         except Exception as e:
             await query.edit_message_text(f"⚠️ Не вдалося вигнати користувача {target_id}: {e}")
     elif data.startswith("admin_warn_"):
@@ -1637,6 +1941,17 @@ async def handle_admin_user_action(update: Update, context: ContextTypes.DEFAULT
                 "Натисніть /dogana, і на кроці 'Порушник' введіть 'за замовчуванням' або вкажіть інше ім'я.",
                 parse_mode="HTML"
             )
+            try:
+                log_action(
+                    actor_id=query.from_user.id,
+                    actor_username=query.from_user.username,
+                    action="dogana_prefill_set",
+                    target_user_id=target_id,
+                    target_username=prof.get('username') if prof else None,
+                    details=f"prefill={disp}",
+                )
+            except Exception:
+                pass
         else:
             await query.edit_message_text(
                 "⚠️ Не знайдено профіль для префілу. Натисніть /dogana та вкажіть ім'я вручну.")
@@ -1784,6 +2099,35 @@ def main() -> None:
     # Додаємо обробку помилок для конфліктів
     async def error_handler(update, context):
         logger.error(f"Помилка оброблена: {context.error}")
+        # Сохраняем в БД
+        try:
+            err = context.error
+            err_type = type(err).__name__ if err else None
+            message = str(err) if err else None
+            import json
+            update_json = None
+            try:
+                if update:
+                    update_json = json.dumps(update.to_dict())
+            except Exception:
+                update_json = None
+            import traceback as tb
+            stack = "".join(tb.format_exception_only(type(err), err)) if err else None
+            log_error(err_type, message, stack, update_json, None)
+            log_action(
+                actor_id=None,
+                actor_username=None,
+                action="error",
+                target_user_id=None,
+                target_username=None,
+                details=f"{err_type}: {message}",
+            )
+        except Exception:
+            pass
+    application.add_handler(CommandHandler("logs", logs_command))
+    application.add_handler(CommandHandler("antispam_top", antispam_top_command))
+    application.add_handler(CommandHandler("export_csv", export_csv_command))
+    application.add_handler(CommandHandler("log_stats", log_stats_command))
     
     application.add_error_handler(error_handler)
     

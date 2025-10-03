@@ -1,5 +1,8 @@
 import os
 import sqlite3
+import csv
+import io
+import traceback
 from contextlib import contextmanager
 from typing import Optional, Dict, Any
 
@@ -116,6 +119,60 @@ def init_db():
                 decided_by_admin_id   INTEGER,
                 decided_by_username   TEXT,
                 invite_link           TEXT
+            );
+            """
+        )
+        # Загальний журнал дій адміністраторів
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS action_logs (
+                id               INTEGER PRIMARY KEY AUTOINCREMENT,
+                actor_id         INTEGER,
+                actor_username   TEXT,
+                action           TEXT,
+                target_user_id   INTEGER,
+                target_username  TEXT,
+                details          TEXT,
+                created_at       TEXT DEFAULT (datetime('now'))
+            );
+            """
+        )
+        # Журнал оновлень профілю (через /refill або інші дії)
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS profile_updates (
+                id             INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id        INTEGER NOT NULL,
+                fields         TEXT, -- JSON/текст із переліком оновлених полів
+                images_count   INTEGER,
+                source         TEXT, -- 'refill' | 'apply' | ...
+                created_at     TEXT DEFAULT (datetime('now'))
+            );
+            """
+        )
+        # Події антиспаму
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS antispam_events (
+                id           INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id      INTEGER NOT NULL,
+                kind         TEXT CHECK(kind IN ('message','callback')),
+                retry_after  REAL,
+                created_at   TEXT DEFAULT (datetime('now'))
+            );
+            """
+        )
+        # Логи ошибок
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS error_logs (
+                id           INTEGER PRIMARY KEY AUTOINCREMENT,
+                error_type   TEXT,
+                message      TEXT,
+                stack        TEXT,
+                update_json  TEXT,
+                context_info TEXT,
+                created_at   TEXT DEFAULT (datetime('now'))
             );
             """
         )
@@ -375,3 +432,219 @@ def decide_access_application(
             """,
             (decision, decided_by_admin_id, decided_by_username, invite_link, user_id),
         )
+
+
+# ===== Загальні логи дій =====
+def log_action(
+    actor_id: int | None,
+    actor_username: str | None,
+    action: str,
+    target_user_id: int | None = None,
+    target_username: str | None = None,
+    details: str | None = None,
+):
+    with get_conn() as conn:
+        conn.execute(
+            """
+            INSERT INTO action_logs (actor_id, actor_username, action, target_user_id, target_username, details)
+            VALUES (?, ?, ?, ?, ?, ?)
+            """,
+            (actor_id, actor_username, action, target_user_id, target_username, details),
+        )
+
+
+def log_profile_update(
+    user_id: int,
+    fields: dict[str, Any] | None,
+    images_count: int | None,
+    source: str,
+):
+    # Просте текстове подання полів
+    fields_text = None
+    if fields:
+        try:
+            # Без json, щоб не тягнути залежності: простий key=value;...
+            fields_text = "; ".join([f"{k}={v}" for k, v in fields.items()])
+        except Exception:
+            fields_text = str(fields)
+    with get_conn() as conn:
+        conn.execute(
+            """
+            INSERT INTO profile_updates (user_id, fields, images_count, source)
+            VALUES (?, ?, ?, ?)
+            """,
+            (user_id, fields_text, images_count, source),
+        )
+
+
+def log_antispam_event(user_id: int, kind: str, retry_after: float | None = None):
+    with get_conn() as conn:
+        conn.execute(
+            """
+            INSERT INTO antispam_events (user_id, kind, retry_after)
+            VALUES (?, ?, ?)
+            """,
+            (user_id, kind, retry_after),
+        )
+
+
+# ===== Логи ошибок =====
+def log_error(error_type: str | None, message: str | None, stack: str | None, update_json: str | None, context_info: str | None):
+    with get_conn() as conn:
+        conn.execute(
+            """
+            INSERT INTO error_logs (error_type, message, stack, update_json, context_info)
+            VALUES (?, ?, ?, ?, ?)
+            """,
+            (error_type, message, stack, update_json, context_info),
+        )
+
+
+# ===== Запросы/сводки для админов =====
+def query_action_logs(
+    limit: int = 50,
+    actor_id: int | None = None,
+    actor_username: str | None = None,
+    action: str | None = None,
+    date_from: str | None = None,  # 'YYYY-MM-DD'
+    date_to: str | None = None,    # 'YYYY-MM-DD'
+) -> list[dict[str, Any]]:
+    where = []
+    params: list[Any] = []
+    if actor_id is not None:
+        where.append("actor_id = ?")
+        params.append(actor_id)
+    if actor_username:
+        where.append("lower(coalesce(actor_username,'')) = lower(?)")
+        params.append(actor_username.lstrip('@'))
+    if action:
+        where.append("action = ?")
+        params.append(action)
+    if date_from:
+        where.append("date(created_at) >= date(?)")
+        params.append(date_from)
+    if date_to:
+        where.append("date(created_at) <= date(?)")
+        params.append(date_to)
+    where_sql = (" WHERE " + " AND ".join(where)) if where else ""
+    sql = f"""
+        SELECT id, actor_id, actor_username, action, target_user_id, target_username, details, created_at
+        FROM action_logs
+        {where_sql}
+        ORDER BY id DESC
+        LIMIT ?
+    """
+    params.append(limit)
+    with get_conn() as conn:
+        cur = conn.execute(sql, params)
+        rows = cur.fetchall()
+        keys = ["id","actor_id","actor_username","action","target_user_id","target_username","details","created_at"]
+        return [dict(zip(keys, r)) for r in rows]
+
+
+def query_antispam_top(days: int = 7, kind: str | None = None, limit: int = 10) -> list[dict[str, Any]]:
+    where = ["datetime(created_at) >= datetime('now', ?) "]
+    params: list[Any] = [f"-{int(days)} days"]
+    if kind in ("message", "callback"):
+        where.append("kind = ?")
+        params.append(kind)
+    where_sql = " WHERE " + " AND ".join(where)
+    sql = f"""
+        SELECT user_id, COUNT(*) AS cnt
+        FROM antispam_events
+        {where_sql}
+        GROUP BY user_id
+        ORDER BY cnt DESC
+        LIMIT ?
+    """
+    params.append(limit)
+    with get_conn() as conn:
+        cur = conn.execute(sql, params)
+        return [{"user_id": r[0], "count": r[1]} for r in cur.fetchall()]
+
+
+def _table_primary_timestamp(table: str) -> str | None:
+    # Определяем подходящую дату для фильтра по дням
+    candidates = {
+        "action_logs": "created_at",
+        "profile_updates": "created_at",
+        "antispam_events": "created_at",
+        "warnings": "created_at",
+        "neaktyv_requests": "created_at",
+        "access_applications": "created_at",
+        "error_logs": "created_at",
+        "profiles": "updated_at",
+        "profile_images": "created_at",
+    }
+    return candidates.get(table)
+
+
+def export_table_csv(table: str, days: int | None = None) -> tuple[str, bytes]:
+    """Экспорт таблицы в CSV. Возвращает (filename, bytes). Разрешены только известные таблицы."""
+    allowed = {
+        "profiles", "profile_images", "warnings", "neaktyv_requests",
+        "access_applications", "action_logs", "profile_updates", "antispam_events", "error_logs"
+    }
+    if table not in allowed:
+        raise ValueError("Недопустима таблиця для експорту")
+    ts_col = _table_primary_timestamp(table)
+    where_sql = ""
+    params: list[Any] = []
+    if days and ts_col:
+        where_sql = f" WHERE datetime({ts_col}) >= datetime('now', ?)"
+        params.append(f"-{int(days)} days")
+    # Получаем список столбцов
+    with get_conn() as conn:
+        cur = conn.execute(f"PRAGMA table_info({table})")
+        cols = [r[1] for r in cur.fetchall()]
+        select_sql = f"SELECT {', '.join(cols)} FROM {table}{where_sql}"
+        cur2 = conn.execute(select_sql, params)
+        rows = cur2.fetchall()
+    # Формируем CSV
+    buf = io.StringIO()
+    writer = csv.writer(buf)
+    writer.writerow(cols)
+    for row in rows:
+        writer.writerow(row)
+    content = buf.getvalue().encode("utf-8-sig")
+    filename = f"{table}.csv"
+    return filename, content
+
+
+def logs_stats(days: int = 7) -> dict[str, Any]:
+    """Сводные показатели за период."""
+    stats: dict[str, Any] = {}
+    with get_conn() as conn:
+        # Действия по типам
+        cur = conn.execute(
+            """
+            SELECT action, COUNT(*)
+            FROM action_logs
+            WHERE datetime(created_at) >= datetime('now', ?)
+            GROUP BY action
+            ORDER BY COUNT(*) DESC
+            """,
+            (f"-{int(days)} days",),
+        )
+        stats["actions_by_type"] = [(r[0], r[1]) for r in cur.fetchall()]
+        # Антиспам итого
+        cur = conn.execute(
+            """
+            SELECT COUNT(*) FROM antispam_events
+            WHERE datetime(created_at) >= datetime('now', ?)
+            """,
+            (f"-{int(days)} days",),
+        )
+        stats["antispam_total"] = cur.fetchone()[0]
+        # Антиспам по типам
+        cur = conn.execute(
+            """
+            SELECT kind, COUNT(*) FROM antispam_events
+            WHERE datetime(created_at) >= datetime('now', ?)
+            GROUP BY kind
+            ORDER BY COUNT(*) DESC
+            """,
+            (f"-{int(days)} days",),
+        )
+        stats["antispam_by_kind"] = [(r[0], r[1]) for r in cur.fetchall()]
+    return stats
