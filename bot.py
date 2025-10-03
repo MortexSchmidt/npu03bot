@@ -860,63 +860,6 @@ async def finalize_application(update: Update, context: ContextTypes.DEFAULT_TYP
     context.user_data['awaiting_application'] = False
     del USER_APPLICATIONS[user_id]
 
-async def send_start_message_to_user(context: ContextTypes.DEFAULT_TYPE, user_id: int) -> None:
-    """Відправляємо повідомлення /start користувачу для оновлення інтерфейсу"""
-    try:
-        # Отримуємо інформацію про користувача
-        user_chat = await context.bot.get_chat(user_id)
-        
-        # Перевірка членства у групі
-        user_is_member = False
-        if REPORTS_CHAT_ID:
-            try:
-                member = await context.bot.get_chat_member(REPORTS_CHAT_ID, user_id)
-                user_is_member = member.status in {"member", "administrator", "creator"}
-            except Exception as e:
-                logger.warning(f"Не вдалося перевірити членство користувача {user_id}: {e}")
-
-        if user_is_member:
-            # Користувач в групі - показуємо меню взаємодії
-            is_admin = user_id in ADMIN_IDS
-            keyboard_rows = [["📝 Заява на неактив"]]
-            if is_admin:
-                keyboard_rows.append(["📝 Оформити догану"])
-            reply_kb = ReplyKeyboardMarkup(keyboard_rows, resize_keyboard=True)
-
-            text = (
-                f"Вітаю, {user_chat.first_name}! 👋\n\n"
-                "Я готовий до роботи з вами у групі. Оберіть дію нижче:"
-            )
-            await context.bot.send_message(
-                chat_id=user_id,
-                text=text,
-                reply_markup=reply_kb
-            )
-        else:
-            # Користувач не в групі - показуємо форму заявки
-            keyboard = [
-                [InlineKeyboardButton("📝 Подати заявку на доступ", callback_data="request_access")]
-            ]
-            reply_markup = InlineKeyboardMarkup(keyboard)
-            
-            text = (
-                f"Вітаю, {user_chat.first_name}! 👋\n\n"
-                "Це бот групи поліції UKRAINE GTA. Для отримання доступу до групи необхідно подати заявку.\n\n"
-                "📋 Що потрібно для подачі заявки:\n"
-                "• Ваше повне ім'я та прізвище\n"
-                "• Вік (від 16 років)\n"
-                "• Досвід роботи в поліції на інших серверах\n"
-                "• Ваш відділ в НПУ\n\n"
-                "Натисніть кнопку нижче, щоб почати:"
-            )
-            await context.bot.send_message(
-                chat_id=user_id,
-                text=text,
-                reply_markup=reply_markup
-            )
-    except Exception as e:
-        logger.error(f"Помилка при відправці start повідомлення користувачу {user_id}: {e}")
-
 async def approve_request(update: Update, context: ContextTypes.DEFAULT_TYPE, user_id: int) -> None:
     """Схвалення заявки"""
     query = update.callback_query
@@ -940,13 +883,13 @@ async def approve_request(update: Update, context: ContextTypes.DEFAULT_TYPE, us
         invite_message = (
             "🎉 Вітаємо!\n\n"
             "Вашу заявку схвалено! Ви отримали персональне запрошення до групи поліції UKRAINE GTA.\n\n"
-            "> 🔗 Ваше особисте посилання:\n"
-            f"> {invite_link}\n\n"
-            "> ⚠️ ВАЖЛИВО:\n"
-            "> • Це посилання створено спеціально для вас\n"
-            "> • Воно одноразове - може використати тільки одна людина\n"
-            "> • Не передавайте його іншим\n"
-            "> • Після вступу посилання стане недійсним"
+            "🔗 Ваше особисте посилання:\n"
+            f"{invite_link}\n\n"
+            "⚠️ ВАЖЛИВО:\n"
+            "• Це посилання створено спеціально для вас\n"
+            "• Воно одноразове - може використати тільки одна людина\n"
+            "• Не передавайте його іншим\n"
+            "• Після вступу посилання стане недійсним"
         )
         
         await context.bot.send_message(
@@ -955,8 +898,7 @@ async def approve_request(update: Update, context: ContextTypes.DEFAULT_TYPE, us
             disable_web_page_preview=True
         )
         
-        # Автоматично викликаємо /start для оновлення інтерфейсу користувача
-        await send_start_message_to_user(context, user_id)
+    # (Оновлення інтерфейсу командою /start прибрано за вимогою)
         
         # Повідомляємо адміністратору про успіх
         await query.edit_message_text(
@@ -984,13 +926,10 @@ async def approve_request(update: Update, context: ContextTypes.DEFAULT_TYPE, us
                 text=(
                     "🎉 Вітаємо!\n\n"
                     "Вашу заявку схвалено! Ви можете приєднатися до групи за основним посиланням:\n\n"
-                    f"> 🔗 {GROUP_INVITE_LINK}"
+                    f"🔗 {GROUP_INVITE_LINK}"
                 ),
                 disable_web_page_preview=True
             )
-            
-            # Автоматично викликаємо /start для оновлення інтерфейсу користувача
-            await send_start_message_to_user(context, user_id)
         except Exception as e2:
             logger.error(f"Не вдалося відправити навіть основне посилання користувачу {user.id}: {e2}")
     
@@ -1018,9 +957,6 @@ async def reject_request(update: Update, context: ContextTypes.DEFAULT_TYPE, use
                 "використавши команду /start."
             )
         )
-        
-        # Автоматично викликаємо /start для оновлення інтерфейсу користувача (показати форму заявки)
-        await send_start_message_to_user(context, user_id)
         
         await query.edit_message_text(
             f"❌ Заявку користувача {user.first_name} ({user.id}) відхилено.\n"
