@@ -622,7 +622,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         # Показуємо меню взаємодії (кнопки під полем вводу)
         is_admin = user.id in ADMIN_IDS
         keyboard_rows = [
-            ["📝 Заява на неактив", "📈 Заява на повищення"]
+            ["📝 Заява на неактив", "📈 Заява на підвищення"]
         ]
         if is_admin:
             keyboard_rows.append(["⚡ Адмін-команди"])  # Перемикач у адмін-меню
@@ -723,7 +723,7 @@ async def show_pending_promotions(update: Update, context: ContextTypes.DEFAULT_
 # Стани для діалогу 'догана'
 DOGANA_OFFENSE, DOGANA_DATE, DOGANA_TO, DOGANA_BY, DOGANA_PUNISH = range(5)
 
-# Стани для заявки на повищення
+# Стани для заявки на підвищення
 PROMOTION_CURRENT_RANK, PROMOTION_TARGET_RANK, PROMOTION_WORKBOOK, PROMOTION_EVIDENCE = range(4)
 
 async def dogana_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
@@ -1083,7 +1083,7 @@ async def neaktyv_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     return ConversationHandler.END
 
 ############################
-# ЗАЯВКА НА ПОВИЩЕННЯ
+# ЗАЯВКА НА ПІДВИЩЕННЯ
 ############################
 
 async def promotion_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
@@ -1531,7 +1531,7 @@ async def cancel_neaktyv_moderation(update: Update, context: ContextTypes.DEFAUL
     return ConversationHandler.END
 
 ############################
-# МОДЕРАЦІЯ ЗАЯВОК НА ПОВИЩЕННЯ
+# МОДЕРАЦІЯ ЗАЯВОК НА ПІДВИЩЕННЯ
 ############################
 
 async def handle_promotion_moderation(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -2490,8 +2490,8 @@ async def open_admin_menu(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     logger.info(f"Opening admin menu for admin {user_id}")
     kb = ReplyKeyboardMarkup([
         ["📝 Оформити догану", "/admin_help"],
-        ["� Рапорти на повищення"],
-        ["�🔙 Звичайні команди"],
+        ["📈 Рапорти на підвищення"],
+        ["🔙 Звичайні команди"],
     ], resize_keyboard=True)
     await update.message.reply_text("🛡️ Адмін-меню відкрито.", reply_markup=kb)
 
@@ -2501,7 +2501,7 @@ async def open_user_menu(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     logger.info(f"open_user_menu called by user {user_id}")
     
     kb_rows = [
-        ["📝 Заява на неактив", "📈 Заява на повищення"]
+        ["📝 Заява на неактив", "📈 Заява на підвищення"]
     ]
     if user_id in ADMIN_IDS:
         kb_rows.append(["⚡ Адмін-команди"])
@@ -2706,13 +2706,13 @@ def main() -> None:
     application.add_handler(CommandHandler("user", user_lookup_command))
     application.add_handler(CommandHandler("find", find_profiles_command))
     
-    # Адмінські текстові команди для рапортів на повищення
-    application.add_handler(MessageHandler(filters.Regex("^📈 Рапорти на повищення$"), show_pending_promotions))
+    # Адмінські текстові команди для рапортів на підвищення
+    application.add_handler(MessageHandler(filters.Regex("^📈 Рапорти на підвищення$"), show_pending_promotions))
 
     # Попередньо обробляємо вибір покарання (inline) до загального кнопкового хендлера
     application.add_handler(CallbackQueryHandler(dogana_punish_selected, pattern=r"^dogana_punish_"))
     
-    # Обробники модерації заявок на повищення
+    # Обробники модерації заявок на підвищення
     application.add_handler(CallbackQueryHandler(handle_promotion_moderation, pattern=r"^(approve|reject)_promotion_\d+$"))
     application.add_handler(CallbackQueryHandler(view_promotion_request, pattern=r"^view_promotion_\d+$"))
     
@@ -2774,9 +2774,9 @@ def main() -> None:
     )
     application.add_handler(refill_conv)
 
-    # Діалог подачі заявки на повишення
+    # Діалог подачі заявки на підвищення
     promotion_conv = ConversationHandler(
-        entry_points=[MessageHandler(filters.Regex("^📈 Заява на повищення$"), promotion_start)],
+        entry_points=[MessageHandler(filters.Regex("^📈 Заява на підвищення$"), promotion_start)],
         states={
             PROMOTION_CURRENT_RANK: [MessageHandler(filters.TEXT & ~filters.COMMAND, promotion_current_rank)],
             PROMOTION_TARGET_RANK: [MessageHandler(filters.TEXT & ~filters.COMMAND, promotion_target_rank)],
