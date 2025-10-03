@@ -4,7 +4,7 @@ import re
 import time
 import traceback
 from collections import deque
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, ReplyKeyboardMarkup, ReplyKeyboardRemove, InputMediaPhoto
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, ReplyKeyboardMarkup, ReplyKeyboardRemove
 from telegram.ext import (
     Application,
     CommandHandler,
@@ -683,7 +683,7 @@ async def show_pending_promotions(update: Update, context: ContextTypes.DEFAULT_
 DOGANA_OFFENSE, DOGANA_DATE, DOGANA_TO, DOGANA_BY, DOGANA_PUNISH = range(5)
 
 # Стани для заявки на підвищення
-PROMOTION_CURRENT_RANK, PROMOTION_TARGET_RANK, PROMOTION_WORKBOOK, PROMOTION_EVIDENCE, PROMOTION_FINISH = range(5)
+PROMOTION_CURRENT_RANK, PROMOTION_TARGET_RANK, PROMOTION_WORKBOOK, PROMOTION_EVIDENCE = range(4)
 
 async def dogana_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     user = update.effective_user
@@ -1154,19 +1154,18 @@ async def promotion_workbook(update: Update, context: ContextTypes.DEFAULT_TYPE)
         )
         return PROMOTION_WORKBOOK
     
+    # Получаем URL изображения (самое большое разрешение)
     photo = update.message.photo[-1]
     
     try:
+        file = await context.bot.get_file(photo.file_id)
+        # Сохраняем file_id изображения
         context.user_data["promotion_form"]["workbook_image_id"] = photo.file_id
-        context.user_data["promotion_form"]["work_evidence_image_ids"] = [] # Инициализируем список для фото доказательств
         
         await update.message.reply_text(
             "✅ Скриншот трудової книги прийнято.\n\n"
-            "Крок 4: Надішліть одне або декілька фото з доказом виконаної роботи.\n"
-            "📸 Це можуть бути скріншоти з гри, звіти, виконані завдання тощо.\n\n"
-            "<b>Коли закінчите, натисніть кнопку 'Завершити'.</b>",
-            parse_mode="HTML",
-            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("✅ Завершити та відправити", callback_data="promotion_finish")]])
+            "Крок 4: Надішліть скриншот проведеної роботи (зображення).\n"
+            "📸 Це може бути скриншот з гри, звітів, виконаних завдань тощо."
         )
         
         return PROMOTION_EVIDENCE
@@ -1179,56 +1178,24 @@ async def promotion_workbook(update: Update, context: ContextTypes.DEFAULT_TYPE)
         return PROMOTION_WORKBOOK
 
 async def promotion_evidence(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """Обработать скриншоты проделанной работы."""
+    """Обработать скриншот проделанной работы."""
     if not update.message.photo:
         await update.message.reply_text(
-            "❌ Будь ласка, надішліть зображення."
+            "❌ Будь ласка, надішліть зображення проведеної роботи."
         )
         return PROMOTION_EVIDENCE
     
+    # Получаем URL изображения
     photo = update.message.photo[-1]
     
     try:
-        # Добавляем file_id в список
-        if "work_evidence_image_ids" not in context.user_data["promotion_form"]:
-            context.user_data["promotion_form"]["work_evidence_image_ids"] = []
-            
-        context.user_data["promotion_form"]["work_evidence_image_ids"].append(photo.file_id)
+        # Сохраняем file_id изображения
+        context.user_data["promotion_form"]["work_evidence_image_id"] = photo.file_id
         
-        count = len(context.user_data["promotion_form"]["work_evidence_image_ids"])
-        await update.message.reply_text(
-            f"✅ Фото доказів {count} отримано.\n"
-            "Надішліть ще або натисніть 'Завершити'.",
-            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("✅ Завершити та відправити", callback_data="promotion_finish")]])
-        )
-        
-        return PROMOTION_EVIDENCE
-        
-    except Exception as e:
-        logger.error(f"Error processing evidence image: {e}")
-        await update.message.reply_text(
-            "❌ Помилка обробки зображення. Спробуйте ще раз."
-        )
-        return PROMOTION_EVIDENCE
-
-async def promotion_finish(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """Завершить подачу заявки и отправить на модерацию."""
-    query = update.callback_query
-    if query:
-        await query.answer()
-        user = query.from_user
-        chat = query.message.chat
-    else: # Если вызвано не кнопкой, а, например, командой
+        # Получаем все данные формы
+        form = context.user_data.get("promotion_form", {})
         user = update.effective_user
-        chat = update.effective_chat
-
-    form = context.user_data.get("promotion_form", {})
-
-    if not form.get("work_evidence_image_ids"):
-        await chat.send_message("❌ Ви не додали жодного фото з доказом роботи.")
-        return PROMOTION_EVIDENCE
-
-    try:
+        
         # Сохраняем заявку в базу данных
         request_id = insert_promotion_request(
             requester_id=user.id,
@@ -1237,39 +1204,43 @@ async def promotion_finish(update: Update, context: ContextTypes.DEFAULT_TYPE) -
             current_rank=form["current_rank"],
             target_rank=form["target_rank"],
             workbook_image_id=form["workbook_image_id"],
-            # Преобразуем список ID в строку для хранения в БД
-            work_evidence_image_ids=",".join(form["work_evidence_image_ids"])
+            work_evidence_image_id=form["work_evidence_image_id"]
         )
         
+        # Логируем создание заявки
         log_action(
             actor_id=user.id,
             actor_username=user.username,
             action="create_promotion_request",
-            details=f"Current: {form['current_rank']}, Target: {form['target_rank']}, Images: {len(form['work_evidence_image_ids'])}"
+            target_user_id=user.id,
+            target_username=user.username,
+            details=f"Current: {form['current_rank']}, Target: {form['target_rank']}"
         )
         
+        # Отправляем заявку админам на модерацию
         await send_promotion_to_admins(context, request_id, form, user)
         
-        final_message = (
+        await update.message.reply_text(
             "✅ <b>Заявка на підвищення подана!</b>\n\n"
             f"📋 Заявка №{request_id}\n"
             f"👤 Заявник: {form['requester_name']}\n"
-            f"📈 Підвищення: {form['current_rank']} → {form['target_rank']}\n"
-            f"📸 Додано доказів: {len(form['work_evidence_image_ids'])}\n\n"
-            "Ваша заявка відправлена адміністраторам на розгляд."
+            f"📈 Підвищення: {form['current_rank']} → {form['target_rank']}\n\n"
+            "Ваша заявка відправлена адміністраторам на розгляд. "
+            "Очікуйте рішення найближчим часом.",
+            parse_mode="HTML"
         )
         
-        if query:
-            await query.edit_message_text(final_message, parse_mode="HTML", reply_markup=None)
-        else:
-            await chat.send_message(final_message, parse_mode="HTML", reply_markup=ReplyKeyboardRemove())
-
+        # Очищаем данные формы
         context.user_data.pop("promotion_form", None)
+        
         return ConversationHandler.END
         
     except Exception as e:
-        logger.error(f"Error processing promotion request: {e}", exc_info=True)
-        await chat.send_message("❌ Помилка створення заявки. Спробуйте пізніше.")
+        logger.error(f"Error processing promotion request: {e}")
+        log_error("promotion_request_error", str(e), traceback.format_exc())
+        await update.message.reply_text(
+            "❌ Помилка створення заявки. Спробуйте пізніше."
+        )
         return ConversationHandler.END
 
 async def promotion_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
@@ -1281,8 +1252,9 @@ async def promotion_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -
 async def send_promotion_to_admins(context: ContextTypes.DEFAULT_TYPE, request_id: int, form: dict, user):
     """Отправить заявку на повышение админам для модерации."""
     
+    # Отправляем фотографии как отдельные сообщения, а затем текст с кнопками
     workbook_image_id = form.get("workbook_image_id")
-    work_evidence_image_ids = form.get("work_evidence_image_ids", [])
+    work_evidence_image_id = form.get("work_evidence_image_id")
 
     admin_message_text = (
         "📈 <b>НОВА ЗАЯВКА НА ПІДВИЩЕННЯ</b>\n\n"
@@ -1291,9 +1263,10 @@ async def send_promotion_to_admins(context: ContextTypes.DEFAULT_TYPE, request_i
         f"🆔 Telegram: @{user.username or 'немає'} (ID: {user.id})\n"
         f"📊 Поточний ранг: {form['current_rank']}\n"
         f"📈 Бажаний ранг: {form['target_rank']}\n\n"
-        "<i>Докази надіслано окремими повідомленнями.</i>"
+        "<i>Докази надіслано окремими повідомленнями вище.</i>"
     )
     
+    # Кнопки для модерации
     keyboard = [
         [
             InlineKeyboardButton("✅ Одобрити", callback_data=f"approve_promotion_{request_id}"),
@@ -1302,26 +1275,24 @@ async def send_promotion_to_admins(context: ContextTypes.DEFAULT_TYPE, request_i
     ]
     reply_markup = InlineKeyboardMarkup(keyboard)
     
+    # Отправляем всем админам
     for admin_id in ADMIN_IDS:
         try:
-            media_group = []
-            # Добавляем фото трудовой книги первым
+            # Отправляем фото трудовой
             if workbook_image_id:
-                media_group.append(InputMediaPhoto(media=workbook_image_id, caption="Трудова книга"))
-
-            # Добавляем фото доказательств
-            for i, evidence_id in enumerate(work_evidence_image_ids):
-                caption = f"Доказ роботи {i+1}" if len(media_group) > 0 else "Докази роботи"
-                media_group.append(InputMediaPhoto(media=evidence_id, caption=caption))
-
-            # Отправляем медиагруппу, если есть фото
-            if media_group:
-                # Ограничение Telegram - до 10 фото в медиагруппе
-                for i in range(0, len(media_group), 10):
-                    chunk = media_group[i:i+10]
-                    await context.bot.send_media_group(chat_id=admin_id, media=chunk)
-
-            # Отправляем основное сообщение с кнопками
+                await context.bot.send_photo(
+                    chat_id=admin_id,
+                    photo=workbook_image_id,
+                    caption="Трудова книга"
+                )
+            # Отправляем фото доказательств
+            if work_evidence_image_id:
+                await context.bot.send_photo(
+                    chat_id=admin_id,
+                    photo=work_evidence_image_id,
+                    caption="Докази роботи"
+                )
+            # Отправляем основное сообщение
             await context.bot.send_message(
                 chat_id=admin_id,
                 text=admin_message_text,
@@ -1329,7 +1300,7 @@ async def send_promotion_to_admins(context: ContextTypes.DEFAULT_TYPE, request_i
                 reply_markup=reply_markup
             )
         except Exception as e:
-            logger.error(f"Failed to send promotion request to admin {admin_id}: {e}", exc_info=True)
+            logger.error(f"Failed to send promotion request to admin {admin_id}: {e}")
 
 ############################
 # МОДЕРАЦІЯ ЗАЯВ НА НЕАКТИВ
@@ -1405,7 +1376,7 @@ async def process_neaktyv_approval_name(update: Update, context: ContextTypes.DE
     if action == "approve":
         # Одобрення - редагуємо повідомлення адміністратора та публікуємо в групу
         # Отримуємо можливе звання для красивого відображення
-        disp_name = display_ranked_name(form.get('rank'), form.get('to_whom') or form.get('full_name_tg') or '')
+        disp_name = display_ranked_name(form.get('rank'), form.get('to_whom'))
         admin_edit_message = (
             "✅ ЗАЯВА ОДОБРЕНА\n\n"
             "<blockquote>"
@@ -1473,11 +1444,11 @@ async def process_neaktyv_approval_name(update: Update, context: ContextTypes.DE
             await update.message.reply_text("❌ Помилка при обробці заяви.")
     else:
         # Відхилення - редагуємо повідомлення адміністратора
-        disp = form.get('to_whom') or form.get('full_name_tg') or ''
+        disp_name = display_ranked_name(form.get('rank'), form.get('to_whom'))
         admin_edit_message = (
             "❌ ЗАЯВА ВІДХИЛЕНА\n\n"
             "<blockquote>"
-            f"1. Кому надається: {disp}\n"
+            f"1. Кому надається: {disp_name}\n"
             f"2. На скільки (час): {form.get('duration')}\n"
             f"3. Підрозділ: {form.get('department')}\n\n"
             f"Від: {form.get('author')}\n"
@@ -1799,23 +1770,12 @@ async def view_promotion_request(update: Update, context: ContextTypes.DEFAULT_T
             photo=request["workbook_image_id"],
             caption="Трудова книга"
         )
-    
-    evidence_ids_str = request.get("work_evidence_image_ids", "")
-    if evidence_ids_str:
-        evidence_ids = evidence_ids_str.split(',')
-        media_group = [InputMediaPhoto(media=file_id) for file_id in evidence_ids]
-        
-        if media_group:
-            # Добавляем подпись к первому элементу, если это возможно
-            media_group[0].caption = "Докази роботи"
-            
-            # Отправляем медиагруппу (до 10 фото за раз)
-            for i in range(0, len(media_group), 10):
-                chunk = media_group[i:i+10]
-                await context.bot.send_media_group(
-                    chat_id=query.from_user.id,
-                    media=chunk
-                )
+    if request.get("work_evidence_image_id"):
+        await context.bot.send_photo(
+            chat_id=query.from_user.id,
+            photo=request["work_evidence_image_id"],
+            caption="Докази роботи"
+        )
 
     # Кнопки для модерации
     keyboard = []
@@ -1877,6 +1837,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
                     "Потрібні: посвідчення та трудова книжка. Надішліть фотографії прямо в чат (по одній за раз)."
                 )
                 context.user_data['step'] = 'waiting_images'
+                context.user_data['images_received'] = []
                 USER_APPLICATIONS[user_id]['step'] = 'waiting_images'
     
     elif query.data.startswith("approve_"):
@@ -2331,7 +2292,7 @@ async def logs_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
             try:
                 kw["actor_id"] = int(a.split("=",1)[1])
             except Exception:
-                kw["actor_id"] = None
+                pass
         elif a.startswith("actor="):
             kw["actor_username"] = a.split("=",1)[1]
         elif a.startswith("from="):
