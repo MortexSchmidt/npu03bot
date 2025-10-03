@@ -1250,9 +1250,14 @@ async def handle_application_text(update: Update, context: ContextTypes.DEFAULT_
     """Універсальний обробник текстових повідомлень для заявок"""
     user = update.effective_user
     user_id = user.id
+    message_text = update.message.text
+    
+    # Логируем все входящие текстовые сообщения
+    logger.info(f"handle_application_text: User {user_id} sent: '{message_text}'")
     
     # Якщо користувач не в процесі подачі заявки
     if not context.user_data.get('awaiting_application'):
+        logger.info(f"User {user_id} not in application process, ignoring text: '{message_text}'")
         return
     
     step = context.user_data.get('step', 'waiting_name')
@@ -1859,22 +1864,31 @@ async def broadcast_fill_profiles(update: Update, context: ContextTypes.DEFAULT_
 
 async def open_admin_menu(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Відкрити адмін-меню (тільки для адмінів)."""
-    if update.effective_user.id not in ADMIN_IDS:
-        # Ігноруємо або відповідаємо відмовою
+    user_id = update.effective_user.id
+    logger.info(f"open_admin_menu called by user {user_id}")
+    
+    if user_id not in ADMIN_IDS:
+        logger.warning(f"Non-admin user {user_id} tried to access admin menu")
         await update.message.reply_text("❌ Немає доступу.")
         return
+    
+    logger.info(f"Opening admin menu for admin {user_id}")
     kb = ReplyKeyboardMarkup([
-        ["📝 Оформити догану"],
-        ["/admin_help"],
+        ["📝 Оформити догану", "/admin_help"],
         ["🔙 Звичайні команди"],
     ], resize_keyboard=True)
     await update.message.reply_text("🛡️ Адмін-меню відкрито.", reply_markup=kb)
 
 async def open_user_menu(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Повернутись до звичайного меню (у всіх користувачів)."""
+    user_id = update.effective_user.id
+    logger.info(f"open_user_menu called by user {user_id}")
+    
     kb_rows = [["📝 Заява на неактив"]]
-    if update.effective_user.id in ADMIN_IDS:
+    if user_id in ADMIN_IDS:
         kb_rows.append(["🛡️ Адмін-команди"])
+        logger.info(f"Added admin button for admin {user_id}")
+    
     kb = ReplyKeyboardMarkup(kb_rows, resize_keyboard=True)
     await update.message.reply_text("🔙 Повернувся до звичайного меню.", reply_markup=kb)
 
@@ -2137,6 +2151,10 @@ def main() -> None:
     # Перемикачі меню для адмінів (до загального обробника текстів!)
     application.add_handler(MessageHandler(filters.Regex("^🛡️ Адмін-команди$"), open_admin_menu))
     application.add_handler(MessageHandler(filters.Regex("^🔙 Звичайні команди$"), open_user_menu))
+    
+    # Додаткові обробники на випадок проблем з емодзі
+    application.add_handler(MessageHandler(filters.Regex(".*Адмін-команди.*"), open_admin_menu))
+    application.add_handler(MessageHandler(filters.Regex(".*Звичайні команди.*"), open_user_menu))
 
     # Існуючі текстові повідомлення анкети
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_application_text))
