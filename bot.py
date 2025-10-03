@@ -404,12 +404,14 @@ async def neaktyv_dept(update: Update, context: ContextTypes.DEFAULT_TYPE) -> in
     user_id = update.message.from_user.id
     
     admin_message = (
-        "� НОВА ЗАЯВА НА НЕАКТИВ\n\n"
+        "📋 НОВА ЗАЯВА НА НЕАКТИВ\n\n"
+        "<blockquote>"
         f"1. Кому надається: {form.get('to_whom')}\n"
         f"2. На скільки (час): {form.get('duration')}\n"
         f"3. Підрозділ: {form.get('department')}\n\n"
         f"Від: {author}\n"
         f"ID заявника: {user_id}"
+        "</blockquote>"
     )
     
     # Клавіатура для модерації
@@ -432,7 +434,7 @@ async def neaktyv_dept(update: Update, context: ContextTypes.DEFAULT_TYPE) -> in
                 chat_id=admin_id,
                 text=admin_message,
                 reply_markup=reply_markup,
-                parse_mode="Markdown"
+                parse_mode="HTML"
             )
         except Exception as e:
             logger.error(f"Не вдалося відправити повідомлення адміністратору {admin_id}: {e}")
@@ -525,20 +527,24 @@ async def process_neaktyv_approval_name(update: Update, context: ContextTypes.DE
         # Одобрення - редагуємо повідомлення адміністратора та публікуємо в групу
         admin_edit_message = (
             "✅ ЗАЯВА ОДОБРЕНА\n\n"
+            "<blockquote>"
             f"1. Кому надається: {form.get('to_whom')}\n"
             f"2. На скільки (час): {form.get('duration')}\n"
             f"3. Підрозділ: {form.get('department')}\n\n"
             f"Від: {form.get('author')}\n"
             f"Модератор: {name}"
+            "</blockquote>"
         )
         
         group_message = (
             "🟦 ЗАЯВА НА НЕАКТИВ\n\n"
+            "<blockquote>"
             f"1. Кому надається: {form.get('to_whom')}\n"
             f"2. На скільки (час): {form.get('duration')}\n"
             f"3. Підрозділ: {form.get('department')}\n\n"
             f"Від: {form.get('author')}\n"
             f"Перевіряючий: {name}"
+            "</blockquote>"
         )
         
         try:
@@ -546,7 +552,8 @@ async def process_neaktyv_approval_name(update: Update, context: ContextTypes.DE
             await context.bot.edit_message_text(
                 chat_id=update.effective_chat.id,
                 message_id=original_message_id,
-                text=admin_edit_message
+                text=admin_edit_message,
+                parse_mode="HTML"
             )
             
             # Публікуємо в групу
@@ -554,7 +561,7 @@ async def process_neaktyv_approval_name(update: Update, context: ContextTypes.DE
                 chat_id=REPORTS_CHAT_ID,
                 text=group_message,
                 message_thread_id=AFK_TOPIC_ID,
-                parse_mode="Markdown"
+                parse_mode="HTML"
             )
             await update.message.reply_text(f"✅ Заяву одобрено та опубліковано в групі!")
         except Exception as e:
@@ -564,11 +571,13 @@ async def process_neaktyv_approval_name(update: Update, context: ContextTypes.DE
         # Відхилення - редагуємо повідомлення адміністратора
         admin_edit_message = (
             "❌ ЗАЯВА ВІДХИЛЕНА\n\n"
+            "<blockquote>"
             f"1. Кому надається: {form.get('to_whom')}\n"
             f"2. На скільки (час): {form.get('duration')}\n"
             f"3. Підрозділ: {form.get('department')}\n\n"
             f"Від: {form.get('author')}\n"
             f"Модератор: {name}"
+            "</blockquote>"
         )
         
         try:
@@ -576,7 +585,8 @@ async def process_neaktyv_approval_name(update: Update, context: ContextTypes.DE
             await context.bot.edit_message_text(
                 chat_id=update.effective_chat.id,
                 message_id=original_message_id,
-                text=admin_edit_message
+                text=admin_edit_message,
+                parse_mode="HTML"
             )
             await update.message.reply_text(f"❌ Заяву відхилено.")
         except Exception as e:
@@ -607,11 +617,12 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     if query.data == "request_access":
         await query.edit_message_text(
             "📝 Крок 1: Введіть ваше ім'я та прізвище\n\n"
-            "⚠️ ВАЖЛИВО:\n"
+            "<blockquote>⚠️ ВАЖЛИВО:\n"
             "• Тільки українською мовою\n"
             "• Повне ім'я та прізвище\n"
             "• Без скорочень та абревіатур\n\n"
-            "Приклад: Іван Петренко"
+            "Приклад: Іван Петренко</blockquote>",
+            parse_mode="HTML"
         )
         context.user_data['awaiting_application'] = True
         context.user_data['step'] = 'waiting_name'
