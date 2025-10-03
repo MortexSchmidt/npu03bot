@@ -169,10 +169,10 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         reply_kb = ReplyKeyboardMarkup(keyboard_rows, resize_keyboard=True)
 
         text = (
-            f"Вітаю, {user.first_name}! 👋\n\n"
-            "Я готовий до роботи з вами у групі. Оберіть дію нижче:"
+            f"<b>Вітаю, {user.first_name}!</b> 👋\n\n"
+            "<i>Я готовий до роботи з вами у групі. Оберіть дію нижче:</i>"
         )
-        await update.message.reply_text(text, reply_markup=reply_kb)
+        await update.message.reply_text(text, reply_markup=reply_kb, parse_mode="HTML")
     else:
         # Користувач ще не в групі — стара логіка отримання доступу
         keyboard = [
@@ -181,11 +181,11 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         reply_markup = InlineKeyboardMarkup(keyboard)
 
         welcome_message = (
-            f"Вітаю, {user.first_name}! 👋\n\n"
-            "Це бот для отримання доступу до групи поліції UKRAINE GTA.\n\n"
-            "Щоб отримати доступ до групи, натисніть кнопку нижче та заповніть заявку."
+            f"<b>Вітаю, {user.first_name}!</b> 👋\n\n"
+            "Це бот для отримання доступу до групи <b>поліції UKRAINE GTA</b>.\n\n"
+            "<i>Щоб отримати доступ до групи, натисніть кнопку нижче та заповніть заявку.</i>"
         )
-        await update.message.reply_text(welcome_message, reply_markup=reply_markup)
+        await update.message.reply_text(welcome_message, reply_markup=reply_markup, parse_mode="HTML")
 
 ############################
 # ДОГАН (адміністраторам)
@@ -201,20 +201,22 @@ async def dogana_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> in
         return ConversationHandler.END
     context.user_data["dogana_form"] = {}
     await update.message.reply_text(
-        "📝 ОФОРМЛЕННЯ ДОГАНИ\n\n"
-        "🔸 Крок 1 з 5: Опис порушення\n\n"
-        "Введіть, будь ласка, детальний опис порушення:",
-        reply_markup=ReplyKeyboardRemove()
+        "📝 <b>ОФОРМЛЕННЯ ДОГАНИ</b>\n\n"
+        "🔸 <b>Крок 1 з 5:</b> Опис порушення\n\n"
+        "<i>Введіть, будь ласка, детальний опис порушення:</i>",
+        reply_markup=ReplyKeyboardRemove(),
+        parse_mode="HTML"
     )
     return DOGANA_OFFENSE
 
 async def dogana_offense(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     context.user_data["dogana_form"]["offense"] = update.message.text.strip()
     await update.message.reply_text(
-        "📝 ОФОРМЛЕННЯ ДОГАНИ\n\n"
-        "🔸 Крок 2 з 5: Дата порушення\n\n"
-        "Вкажіть дату порушення у форматі ДД.ММ.РРРР або ДД.ММ:\n"
-        "Приклад: 01.10.2025 або 01.10"
+        "📝 <b>ОФОРМЛЕННЯ ДОГАНИ</b>\n\n"
+        "🔸 <b>Крок 2 з 5:</b> Дата порушення\n\n"
+        "<i>Вкажіть дату у форматі</i> <code>ДД.ММ.РРРР</code> <i>або</i> <code>ДД.ММ</code>:\n"
+        "Приклад: <code>01.10.2025</code> або <code>01.10</code>",
+        parse_mode="HTML"
     )
     return DOGANA_DATE
 
@@ -224,20 +226,22 @@ async def dogana_date(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int
     # Перевірка формату дати (цифри та точки)
     if not re.match(r'^\d{1,2}\.\d{1,2}(\.\d{4})?$', date_text):
         await update.message.reply_text(
-            "❌ Невірний формат дати!\n\n"
-            "Використовуйте формат:\n"
-            "• ДД.ММ.РРРР (наприклад: 01.10.2025)\n"
-            "• ДД.ММ (наприклад: 01.10)\n\n"
-            "Спробуйте ще раз:"
+            "❌ <b>Невірний формат дати!</b>\n\n"
+            "<i>Використовуйте формат:</i>\n"
+            "• <code>ДД.ММ.РРРР</code> (наприклад: <code>01.10.2025</code>)\n"
+            "• <code>ДД.ММ</code> (наприклад: <code>01.10</code>)\n\n"
+            "Спробуйте ще раз:",
+            parse_mode="HTML"
         )
         return DOGANA_DATE
     
     context.user_data["dogana_form"]["date"] = date_text
     await update.message.reply_text(
-        "📝 ОФОРМЛЕННЯ ДОГАНИ\n\n"
-        "🔸 Крок 3 з 5: Порушник\n\n"
+        "📝 <b>ОФОРМЛЕННЯ ДОГАНИ</b>\n\n"
+        "🔸 <b>Крок 3 з 5:</b> Порушник\n\n"
         "Введіть ім'я та прізвище особи, якій видається догана:\n"
-        "(Тільки українською мовою, повне ім'я та прізвище)"
+        "<i>(українською мовою, повне ім'я та прізвище)</i>",
+        parse_mode="HTML"
     )
     return DOGANA_TO
 
@@ -247,12 +251,13 @@ async def dogana_to(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     # Перевірка українських символів та формату імені
     if not re.match(r'^[А-ЯІЇЄа-яіїє\'\-\s\.]+$', name_text):
         await update.message.reply_text(
-            "❌ Ім'я та прізвище мають бути українською мовою!\n\n"
-            "Приклади правильного формату:\n"
+            "❌ <b>Ім'я та прізвище мають бути українською мовою!</b>\n\n"
+            "<i>Приклади правильного формату:</i>\n"
             "✅ Олександр Іваненко\n"
             "✅ Марія Петренко-Коваленко\n"
             "✅ Анна-Марія Сидоренко\n\n"
-            "Спробуйте ще раз:"
+            "Спробуйте ще раз:",
+            parse_mode="HTML"
         )
         return DOGANA_TO
     
@@ -260,9 +265,10 @@ async def dogana_to(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     words = name_text.split()
     if len(words) < 2:
         await update.message.reply_text(
-            "❌ Потрібно вказати ім'я та прізвище!\n\n"
-            "Приклад: Олександр Іваненко\n\n"
-            "Спробуйте ще раз:"
+            "❌ <b>Потрібно вказати ім'я та прізвище!</b>\n\n"
+            "Приклад: <code>Олександр Іваненко</code>\n\n"
+            "Спробуйте ще раз:",
+            parse_mode="HTML"
         )
         return DOGANA_TO
     
@@ -270,10 +276,11 @@ async def dogana_to(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     # Пропонуємо автозаповнення хто видав
     admin_name = f"{update.effective_user.first_name} {update.effective_user.last_name or ''}".strip()
     await update.message.reply_text(
-        "📝 ОФОРМЛЕННЯ ДОГАНИ\n\n"
-        "🔸 Крок 4 з 5: Хто видав\n\n"
-        f"За замовчуванням: {admin_name}\n\n"
-        "Введіть ім'я та прізвище особи, яка видає догану, або залиште як є:"
+        "📝 <b>ОФОРМЛЕННЯ ДОГАНИ</b>\n\n"
+        "🔸 <b>Крок 4 з 5:</b> Хто видав\n\n"
+        f"За замовчуванням: <code>{admin_name}</code>\n\n"
+        "<i>Введіть ім'я та прізвище особи, яка видає догану, або залиште як є:</i>",
+        parse_mode="HTML"
     )
     context.user_data["dogana_form"]["default_by"] = admin_name
     return DOGANA_BY
@@ -291,10 +298,11 @@ async def dogana_by(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
         ]
     ])
     await update.message.reply_text(
-        "📝 ОФОРМЛЕННЯ ДОГАНИ\n\n"
-        "🔸 Крок 5 з 5: Вид покарання\n\n"
+        "📝 <b>ОФОРМЛЕННЯ ДОГАНИ</b>\n\n"
+        "🔸 <b>Крок 5 з 5:</b> Вид покарання\n\n"
         "Оберіть вид покарання:",
-        reply_markup=kb
+        reply_markup=kb,
+        parse_mode="HTML"
     )
     return DOGANA_PUNISH
 
@@ -305,19 +313,22 @@ async def dogana_punish_selected(update: Update, context: ContextTypes.DEFAULT_T
     form = context.user_data.get("dogana_form", {})
 
     text = (
-        "⚠️ ДОГАНА\n\n"
+        "⚠️ <b>ДОГАНА</b>\n\n"
+        "<blockquote>"
         f"1. Порушення: {form.get('offense')}\n"
         f"2. Дата порушення: {form.get('date')}\n"
         f"3. Кому видано: {form.get('to_whom')}\n"
         f"4. Хто видав: {form.get('by_whom')}\n"
         f"5. Покарання: {kind}\n\n"
         f"Від: @{query.from_user.username if query.from_user.username else query.from_user.first_name}"
+        "</blockquote>"
     )
     try:
         await context.bot.send_message(
             chat_id=REPORTS_CHAT_ID,
             text=text,
             message_thread_id=WARNINGS_TOPIC_ID,
+            parse_mode="HTML",
             disable_web_page_preview=True,
         )
         await query.edit_message_text("✅ Догану оформлено та відправлено у тему.")
@@ -1008,7 +1019,8 @@ def main() -> None:
 
     # Попередньо обробляємо вибір покарання (inline) до загального кнопкового хендлера
     application.add_handler(CallbackQueryHandler(dogana_punish_selected, pattern=r"^dogana_punish_"))
-    application.add_handler(CallbackQueryHandler(button_handler))
+    # Ограничиваем общий обработчик кнопок, чтобы не перехватывать approve_neaktyv_/reject_neaktyv_
+    application.add_handler(CallbackQueryHandler(button_handler, pattern=r"^(request_access|npu_.+|approve_\d+|reject_\d+)$"))
 
     # Діалоги: Догани (адміністраторам)
     dogana_conv = ConversationHandler(
