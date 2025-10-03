@@ -13,6 +13,7 @@ from telegram.ext import (
     ConversationHandler,
 )
 from db import init_db, upsert_profile, update_profile_fields, get_profile
+from db import init_db, upsert_profile, update_profile_fields, get_profile, get_profile_by_username, search_profiles
 
 # Налаштування логування
 logging.basicConfig(
@@ -1068,6 +1069,56 @@ async def admin_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         f"Заявок в очікуванні: {pending_count}"
     )
 
+def _format_profile(profile: dict) -> str:
+    return (
+        "👤 <b>Профіль</b>\n\n"
+        f"🆔 Telegram ID: <code>{profile['telegram_id']}</code>\n"
+        f"📱 Username: @{profile['username'] or 'немає'}\n"
+        f"Ім'я в Telegram: {profile['full_name_tg'] or '—'}\n"
+        f"Ім'я у грі: {profile['in_game_name'] or '—'}\n"
+        f"Звання: {profile['rank'] or '—'}\n"
+        f"Підрозділ: {profile['npu_department'] or '—'}\n"
+        f"Роль: {profile['role'] or 'user'}\n"
+        f"Оновлено: {profile['updated_at'] or '—'}\n"
+    )
+
+async def user_lookup_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """/user <id|@username> — показать профиль (только админам)."""
+    if update.effective_user.id not in ADMIN_IDS:
+        await update.message.reply_text("❌ Немає доступу.")
+        return
+    if not context.args:
+        await update.message.reply_text("Використання: /user <telegram_id | @username>")
+        return
+    arg = context.args[0]
+    profile = None
+    if arg.isdigit():
+        profile = get_profile(int(arg))
+    else:
+        profile = get_profile_by_username(arg)
+    if not profile:
+        await update.message.reply_text("Не знайдено профіль.")
+        return
+    await update.message.reply_text(_format_profile(profile), parse_mode="HTML", disable_web_page_preview=True)
+
+async def find_profiles_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """/find <текст> — пошук профілів по username/Ім'я TG/Ім'я у грі (тільки адмінам)."""
+    if update.effective_user.id not in ADMIN_IDS:
+        await update.message.reply_text("❌ Немає доступу.")
+        return
+    q = " ".join(context.args).strip()
+    if not q:
+        await update.message.reply_text("Використання: /find <текст>")
+        return
+    results = search_profiles(q, limit=10)
+    if not results:
+        await update.message.reply_text("Нічого не знайдено.")
+        return
+    chunks = [
+        _format_profile(p) for p in results
+    ]
+    await update.message.reply_text("\n\n".join(chunks), parse_mode="HTML", disable_web_page_preview=True)
+
 async def me_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Показати збережений профіль користувача."""
     user = update.effective_user
@@ -1097,6 +1148,8 @@ def main() -> None:
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CommandHandler("me", me_command))
     application.add_handler(CommandHandler("admin", admin_command))
+    application.add_handler(CommandHandler("user", user_lookup_command))
+    application.add_handler(CommandHandler("find", find_profiles_command))
 
     # Попередньо обробляємо вибір покарання (inline) до загального кнопкового хендлера
     application.add_handler(CallbackQueryHandler(dogana_punish_selected, pattern=r"^dogana_punish_"))
