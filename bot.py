@@ -56,6 +56,36 @@ NPU_DEPARTMENTS = {
     "kyiv": "🏛️ Управління НПУ в Києві"
 }
 
+# Список звань НПУ для UKRAINE GTA (по порядку)
+NPU_RANKS = [
+    "Рядовий",
+    "Капрал",
+    "Сержант",
+    "Старший сержант",
+    "Молодший лейтенант",
+    "Лейтенант",
+    "Старший лейтенант",
+    "Капітан",
+    "Майор",
+    "Підполковник",
+    "Полковник",
+    "Генерал",
+]
+
+def parse_ranked_name(text: str) -> tuple[str | None, str]:
+    """Виділяє звання на початку рядка, якщо воно є, та повертає (rank, name).
+    Якщо звання не знайдено — повертає (None, original_text).
+    Порівняння нечутливе до регістру.
+    """
+    s = text.strip()
+    lower = s.lower()
+    for rank in NPU_RANKS:
+        r = rank.lower()
+        if lower.startswith(r + " "):
+            name = s[len(rank):].strip()
+            return rank, name
+    return None, s
+
 def is_ukrainian_name(text: str) -> bool:
     """Перевіряє, чи містить текст українські ім'я та прізвище"""
     # Українські літери
@@ -76,6 +106,10 @@ def is_ukrainian_name(text: str) -> bool:
             return False
     
     return True
+
+def display_ranked_name(rank: str | None, name: str) -> str:
+    """Повертає відформатоване ім'я з опціональним званням."""
+    return f"{rank} {name}".strip() if rank else name
 
 def is_valid_image_url(url: str) -> bool:
     """Перевіряє, чи є URL валідним посиланням на зображення"""
@@ -246,7 +280,8 @@ async def dogana_date(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int
     return DOGANA_TO
 
 async def dogana_to(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    name_text = update.message.text.strip()
+    raw = update.message.text.strip()
+    rank, name_text = parse_ranked_name(raw)
     
     # Перевірка українських символів та формату імені
     if not re.match(r'^[А-ЯІЇЄа-яіїє\'\-\s\.]+$', name_text):
@@ -273,6 +308,7 @@ async def dogana_to(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
         return DOGANA_TO
     
     context.user_data["dogana_form"]["to_whom"] = name_text
+    context.user_data["dogana_form"]["rank_to"] = rank
     # Пропонуємо автозаповнення хто видав
     admin_name = f"{update.effective_user.first_name} {update.effective_user.last_name or ''}".strip()
     await update.message.reply_text(
@@ -317,7 +353,7 @@ async def dogana_punish_selected(update: Update, context: ContextTypes.DEFAULT_T
         "<blockquote>"
         f"1. Порушення: {form.get('offense')}\n"
         f"2. Дата порушення: {form.get('date')}\n"
-        f"3. Кому видано: {form.get('to_whom')}\n"
+        f"3. Кому видано: {display_ranked_name(form.get('rank_to'), form.get('to_whom'))}\n"
         f"4. Хто видав: {form.get('by_whom')}\n"
         f"5. Покарання: {kind}\n\n"
         f"Від: @{query.from_user.username if query.from_user.username else query.from_user.first_name}"
@@ -365,7 +401,8 @@ async def neaktyv_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> i
     return NEAKTYV_TO
 
 async def neaktyv_to(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    name = update.message.text.strip()
+    raw = update.message.text.strip()
+    rank, name = parse_ranked_name(raw)
     
     # Валідація українського імені
     if not re.match(r'^[А-ЯҐІЇЄЁ][а-яґіїєё\']*\s+[А-ЯҐІЇЄЁ][а-яґіїєё\']*$', name):
@@ -375,15 +412,16 @@ async def neaktyv_to(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
             "• Бути українською мовою\n"
             "• Починатися з великих літер\n"
             "• Містити лише літери українського алфавіту\n\n"
-            "Приклади правильного введення:\n"
-            "✅ Олексій Петренко\n"
-            "✅ Марія Коваленко\n"
-            "✅ Дмитро О'Коннор\n\n"
+            "Приклади правильного введення (зі званням або без нього):\n"
+            "✅ Рядовий Іван Петренко\n"
+            "✅ Капітан Марія Коваленко\n"
+            "✅ Олексій Петренко\n\n"
             "Спробуйте ще раз:"
         )
         return NEAKTYV_TO
     
     context.user_data["neaktyv_form"]["to_whom"] = name
+    context.user_data["neaktyv_form"]["rank"] = rank
     await update.message.reply_text(
         "🔸 Крок 2 з 3: Термін неактиву\n\n"
         "Введіть термін неактиву:\n"
@@ -417,7 +455,7 @@ async def neaktyv_dept(update: Update, context: ContextTypes.DEFAULT_TYPE) -> in
     admin_message = (
         "📋 НОВА ЗАЯВА НА НЕАКТИВ\n\n"
         "<blockquote>"
-        f"1. Кому надається: {form.get('to_whom')}\n"
+        f"1. Кому надається: {display_ranked_name(form.get('rank'), form.get('to_whom'))}\n"
         f"2. На скільки (час): {form.get('duration')}\n"
         f"3. Підрозділ: {form.get('department')}\n\n"
         f"Від: {author}\n"
@@ -536,10 +574,12 @@ async def process_neaktyv_approval_name(update: Update, context: ContextTypes.DE
     
     if action == "approve":
         # Одобрення - редагуємо повідомлення адміністратора та публікуємо в групу
+        # Отримуємо можливе звання для красивого відображення
+        disp_name = display_ranked_name(form.get('rank'), form.get('to_whom'))
         admin_edit_message = (
             "✅ ЗАЯВА ОДОБРЕНА\n\n"
             "<blockquote>"
-            f"1. Кому надається: {form.get('to_whom')}\n"
+            f"1. Кому надається: {disp_name}\n"
             f"2. На скільки (час): {form.get('duration')}\n"
             f"3. Підрозділ: {form.get('department')}\n\n"
             f"Від: {form.get('author')}\n"
@@ -550,7 +590,7 @@ async def process_neaktyv_approval_name(update: Update, context: ContextTypes.DE
         group_message = (
             "🟦 ЗАЯВА НА НЕАКТИВ\n\n"
             "<blockquote>"
-            f"1. Кому надається: {form.get('to_whom')}\n"
+            f"1. Кому надається: {disp_name}\n"
             f"2. На скільки (час): {form.get('duration')}\n"
             f"3. Підрозділ: {form.get('department')}\n\n"
             f"Від: {form.get('author')}\n"
@@ -580,10 +620,11 @@ async def process_neaktyv_approval_name(update: Update, context: ContextTypes.DE
             await update.message.reply_text("❌ Помилка при обробці заяви.")
     else:
         # Відхилення - редагуємо повідомлення адміністратора
+        disp_name = display_ranked_name(form.get('rank'), form.get('to_whom'))
         admin_edit_message = (
             "❌ ЗАЯВА ВІДХИЛЕНА\n\n"
             "<blockquote>"
-            f"1. Кому надається: {form.get('to_whom')}\n"
+            f"1. Кому надається: {disp_name}\n"
             f"2. На скільки (час): {form.get('duration')}\n"
             f"3. Підрозділ: {form.get('department')}\n\n"
             f"Від: {form.get('author')}\n"
