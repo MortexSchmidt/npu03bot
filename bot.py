@@ -166,6 +166,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         keyboard_rows = [["📝 Заява на неактив"]]
         if is_admin:
             keyboard_rows.append(["📝 Оформити догану"])
+            keyboard_rows.append(["👑 Видати AFK"])
         reply_kb = ReplyKeyboardMarkup(keyboard_rows, resize_keyboard=True)
 
         text = (
@@ -339,6 +340,12 @@ async def dogana_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> i
 
 NEAKTYV_TO, NEAKTYV_BY, NEAKTYV_TIME, NEAKTYV_DEPARTMENT = range(4)
 
+############################
+# ВИДАЧА AFK (тільки адміністратори)
+############################
+
+ADMIN_AFK_TO, ADMIN_AFK_TIME, ADMIN_AFK_REASON, ADMIN_AFK_DEPARTMENT = range(4)
+
 async def neaktyv_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     context.user_data["neaktyv_form"] = {}
     await update.message.reply_text(
@@ -452,6 +459,126 @@ async def neaktyv_dept(update: Update, context: ContextTypes.DEFAULT_TYPE) -> in
 async def neaktyv_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     context.user_data.pop("neaktyv_form", None)
     await update.message.reply_text("Скасовано.", reply_markup=ReplyKeyboardRemove())
+    return ConversationHandler.END
+
+############################
+# ФУНКЦІЇ ВИДАЧІ AFK (АДМІНИ)
+############################
+
+async def admin_afk_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Початок діалогу видачі AFK адміністратором"""
+    user = update.effective_user
+    if user.id not in ADMIN_IDS:
+        await update.message.reply_text("❌ Ця функція доступна лише адміністраторам.")
+        return ConversationHandler.END
+    
+    context.user_data["admin_afk_form"] = {}
+    await update.message.reply_text(
+        "👑 ВИДАЧА AFK (АДМІНІСТРАТОР)\n\n"
+        "🔸 Крок 1 з 4: Отримувач\n\n"
+        "Введіть ім'я та прізвище особи, якій видається AFK:\n"
+        "(Українською мовою, повне ім'я та прізвище)",
+        reply_markup=ReplyKeyboardRemove()
+    )
+    return ADMIN_AFK_TO
+
+async def admin_afk_to(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Обробка введення отримувача AFK"""
+    name = update.message.text.strip()
+    
+    # Валідація українського імені
+    if not re.match(r'^[А-ЯҐІЇЄЁ][а-яґіїєё\']*\s+[А-ЯҐІЇЄЁ][а-яґіїєё\']*$', name):
+        await update.message.reply_text(
+            "❌ Помилка введення!\n\n"
+            "Ім'я та прізвище повинні:\n"
+            "• Бути українською мовою\n"
+            "• Починатися з великих літер\n"
+            "• Містити лише літери українського алфавіту\n\n"
+            "Приклади правильного введення:\n"
+            "✅ Олексій Петренко\n"
+            "✅ Марія Коваленко\n"
+            "✅ Дмитро О'Коннор\n\n"
+            "Спробуйте ще раз:"
+        )
+        return ADMIN_AFK_TO
+    
+    context.user_data["admin_afk_form"]["to_whom"] = name
+    await update.message.reply_text(
+        "🔸 Крок 2 з 4: Термін AFK\n\n"
+        "Введіть термін AFK:\n"
+        "(Наприклад: 1 тиждень, 2 тижні, 1 місяць)"
+    )
+    return ADMIN_AFK_TIME
+
+async def admin_afk_time(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Обробка введення терміну AFK"""
+    context.user_data["admin_afk_form"]["duration"] = update.message.text.strip()
+    await update.message.reply_text(
+        "🔸 Крок 3 з 4: Причина\n\n"
+        "Введіть причину видачі AFK:\n"
+        "(Наприклад: навчання, відпустка, особисті обставини)"
+    )
+    return ADMIN_AFK_REASON
+
+async def admin_afk_reason(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Обробка введення причини AFK"""
+    context.user_data["admin_afk_form"]["reason"] = update.message.text.strip()
+    await update.message.reply_text(
+        "🔸 Крок 4 з 4: Відділ\n\n"
+        "Оберіть відділ НПУ:",
+        reply_markup=ReplyKeyboardMarkup(
+            [[dept] for dept in NPU_DEPARTMENTS.keys()],
+            one_time_keyboard=True,
+            resize_keyboard=True
+        )
+    )
+    return ADMIN_AFK_DEPARTMENT
+
+async def admin_afk_department(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Фінальна обробка та відправка AFK"""
+    context.user_data["admin_afk_form"]["department"] = update.message.text.strip()
+    form = context.user_data.get("admin_afk_form", {})
+    
+    # Формування повідомлення з атрибуцією автора
+    username = update.message.from_user.username
+    display_name = update.message.from_user.first_name
+    author = f"@{username}" if username else display_name
+    
+    text = (
+        "👑 ВИДАЧА AFK (АДМІНІСТРАТОР)\n\n"
+        f"1. Кому видається: {form.get('to_whom')}\n"
+        f"2. Термін: {form.get('duration')}\n"
+        f"3. Причина: {form.get('reason')}\n"
+        f"4. Відділ: {form.get('department')}\n\n"
+        f"Видав: {author}"
+    )
+    
+    try:
+        await context.bot.send_message(
+            chat_id=GROUP_CHAT_ID,
+            text=text,
+            message_thread_id=AFK_TOPIC_ID,
+            parse_mode="Markdown"
+        )
+        await update.message.reply_text(
+            "✅ AFK успішно видано та опубліковано в групі!",
+            reply_markup=ReplyKeyboardRemove()
+        )
+    except Exception as e:
+        logger.error(f"Помилка при відправці AFK в групу: {e}")
+        await update.message.reply_text(
+            "❌ Помилка при відправці в групу. Спробуйте пізніше.",
+            reply_markup=ReplyKeyboardRemove()
+        )
+    
+    # Очищення даних форми
+    context.user_data.pop("admin_afk_form", None)
+    return ConversationHandler.END
+
+async def admin_afk_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Скасування діалогу видачі AFK"""
+    context.user_data.pop("admin_afk_form", None)
+    await update.message.reply_text("❌ Видачу AFK скасовано.", reply_markup=ReplyKeyboardRemove())
     return ConversationHandler.END
 
 async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -875,6 +1002,20 @@ def main() -> None:
         allow_reentry=True,
     )
     application.add_handler(neaktyv_conv)
+
+    # Діалоги: Видача AFK (тільки адміни)
+    admin_afk_conv = ConversationHandler(
+        entry_points=[CommandHandler("admin_afk", admin_afk_start), MessageHandler(filters.Regex("^👑 Видати AFK$"), admin_afk_start)],
+        states={
+            ADMIN_AFK_TO: [MessageHandler(filters.TEXT & ~filters.COMMAND, admin_afk_to)],
+            ADMIN_AFK_TIME: [MessageHandler(filters.TEXT & ~filters.COMMAND, admin_afk_time)],
+            ADMIN_AFK_REASON: [MessageHandler(filters.TEXT & ~filters.COMMAND, admin_afk_reason)],
+            ADMIN_AFK_DEPARTMENT: [MessageHandler(filters.TEXT & ~filters.COMMAND, admin_afk_department)],
+        },
+        fallbacks=[CommandHandler("cancel", admin_afk_cancel)],
+        allow_reentry=True,
+    )
+    application.add_handler(admin_afk_conv)
 
     # Існуючі текстові повідомлення анкети
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_application_text))
