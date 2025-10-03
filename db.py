@@ -56,7 +56,7 @@ def init_db():
             CREATE TABLE IF NOT EXISTS profile_images (
                 id           INTEGER PRIMARY KEY AUTOINCREMENT,
                 telegram_id  INTEGER NOT NULL,
-                url          TEXT NOT NULL,
+                file_id      TEXT NOT NULL,
                 created_at   TEXT DEFAULT (datetime('now')),
                 FOREIGN KEY(telegram_id) REFERENCES profiles(telegram_id) ON DELETE CASCADE
             );
@@ -325,21 +325,21 @@ def search_profiles(query: str, limit: int = 10) -> list[Dict[str, Any]]:
         return [dict(zip(keys, row)) for row in rows]
 
 
-def replace_profile_images(telegram_id: int, urls: list[str]):
+def replace_profile_images(telegram_id: int, file_ids: list[str]):
     """Полностью заменяет список изображений профиля на переданный."""
     with get_conn() as conn:
         conn.execute("DELETE FROM profile_images WHERE telegram_id = ?", (telegram_id,))
-        if urls:
+        if file_ids:
             conn.executemany(
-                "INSERT INTO profile_images(telegram_id, url) VALUES(?, ?)",
-                [(telegram_id, u) for u in urls],
+                "INSERT INTO profile_images(telegram_id, file_id) VALUES(?, ?)",
+                [(telegram_id, u) for u in file_ids],
             )
 
 
 def get_profile_images(telegram_id: int) -> list[str]:
     with get_conn() as conn:
         cur = conn.execute(
-            "SELECT url FROM profile_images WHERE telegram_id = ? ORDER BY id ASC",
+            "SELECT file_id FROM profile_images WHERE telegram_id = ? ORDER BY id ASC",
             (telegram_id,),
         )
         return [r[0] for r in cur.fetchall()]
