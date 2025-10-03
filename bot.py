@@ -2073,9 +2073,6 @@ def main() -> None:
     application.add_handler(CommandHandler("broadcast_fill", broadcast_fill_profiles))
     application.add_handler(CommandHandler("user", user_lookup_command))
     application.add_handler(CommandHandler("find", find_profiles_command))
-    # Перемикачі меню для адмінів
-    application.add_handler(MessageHandler(filters.Regex("^🛡️ Адмін-команди$"), open_admin_menu))
-    application.add_handler(MessageHandler(filters.Regex("^🔙 Звичайні команди$"), open_user_menu))
 
     # Попередньо обробляємо вибір покарання (inline) до загального кнопкового хендлера
     application.add_handler(CallbackQueryHandler(dogana_punish_selected, pattern=r"^dogana_punish_"))
@@ -2136,6 +2133,10 @@ def main() -> None:
         allow_reentry=True,
     )
     application.add_handler(refill_conv)
+
+    # Перемикачі меню для адмінів (до загального обробника текстів!)
+    application.add_handler(MessageHandler(filters.Regex("^🛡️ Адмін-команди$"), open_admin_menu))
+    application.add_handler(MessageHandler(filters.Regex("^🔙 Звичайні команди$"), open_user_menu))
 
     # Існуючі текстові повідомлення анкети
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_application_text))
