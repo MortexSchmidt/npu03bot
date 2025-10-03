@@ -3,12 +3,20 @@ import sqlite3
 from contextlib import contextmanager
 from typing import Optional, Dict, Any
 
-DB_PATH = os.path.join(os.path.dirname(__file__), "data", "bot.db")
+# Разрешаем переопределять путь к БД через переменные окружения
+_DEFAULT_DATA_DIR = os.path.join(os.path.dirname(__file__), "data")
+_ENV_DB_PATH = os.getenv("DB_PATH")
+_ENV_DB_DIR = os.getenv("DB_DIR")
+
+if _ENV_DB_PATH:
+    DB_PATH = _ENV_DB_PATH
+else:
+    data_dir = _ENV_DB_DIR or _DEFAULT_DATA_DIR
+    DB_PATH = os.path.join(data_dir, "bot.db")
 
 
 def _ensure_dir():
-    data_dir = os.path.join(os.path.dirname(__file__), "data")
-    os.makedirs(data_dir, exist_ok=True)
+    os.makedirs(os.path.dirname(DB_PATH), exist_ok=True)
 
 
 @contextmanager
