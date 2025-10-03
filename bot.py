@@ -1180,8 +1180,8 @@ async def promotion_workbook(update: Update, context: ContextTypes.DEFAULT_TYPE)
     
     try:
         file = await context.bot.get_file(photo.file_id)
-        # Сохраняем URL изображения
-        context.user_data["promotion_form"]["workbook_image"] = f"https://api.telegram.org/file/bot{context.bot.token}/{file.file_path}"
+        # Сохраняем file_id изображения
+        context.user_data["promotion_form"]["workbook_image_id"] = photo.file_id
         
         await update.message.reply_text(
             "✅ Скриншот трудової книги прийнято.\n\n"
@@ -1210,9 +1210,8 @@ async def promotion_evidence(update: Update, context: ContextTypes.DEFAULT_TYPE)
     photo = update.message.photo[-1]
     
     try:
-        file = await context.bot.get_file(photo.file_id)
-        # Сохраняем URL изображения
-        context.user_data["promotion_form"]["work_evidence_image"] = f"https://api.telegram.org/file/bot{context.bot.token}/{file.file_path}"
+        # Сохраняем file_id изображения
+        context.user_data["promotion_form"]["work_evidence_image_id"] = photo.file_id
         
         # Получаем все данные формы
         form = context.user_data.get("promotion_form", {})
@@ -1225,8 +1224,8 @@ async def promotion_evidence(update: Update, context: ContextTypes.DEFAULT_TYPE)
             requester_name=form["requester_name"],
             current_rank=form["current_rank"],
             target_rank=form["target_rank"],
-            workbook_image=form["workbook_image"],
-            work_evidence_image=form["work_evidence_image"]
+            workbook_image_id=form["workbook_image_id"],
+            work_evidence_image_id=form["work_evidence_image_id"]
         )
         
         # Логируем создание заявки
@@ -1273,15 +1272,19 @@ async def promotion_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -
 
 async def send_promotion_to_admins(context: ContextTypes.DEFAULT_TYPE, request_id: int, form: dict, user):
     """Отправить заявку на повышение админам для модерации."""
-    admin_message = (
+    
+    # Отправляем фотографии как отдельные сообщения, а затем текст с кнопками
+    workbook_image_id = form.get("workbook_image_id")
+    work_evidence_image_id = form.get("work_evidence_image_id")
+
+    admin_message_text = (
         "📈 <b>НОВА ЗАЯВКА НА ПІДВИЩЕННЯ</b>\n\n"
         f"📋 Заявка №{request_id}\n\n"
         f"👤 Заявник: {form['requester_name']}\n"
         f"🆔 Telegram: @{user.username or 'немає'} (ID: {user.id})\n"
         f"📊 Поточний ранг: {form['current_rank']}\n"
         f"📈 Бажаний ранг: {form['target_rank']}\n\n"
-        f"📋 Трудова книга: [переглянути]({form['workbook_image']})\n"
-        f"📸 Докази роботи: [переглянути]({form['work_evidence_image']})"
+        "<i>Докази надіслано окремими повідомленнями вище.</i>"
     )
     
     # Кнопки для модерации
@@ -1296,12 +1299,26 @@ async def send_promotion_to_admins(context: ContextTypes.DEFAULT_TYPE, request_i
     # Отправляем всем админам
     for admin_id in ADMIN_IDS:
         try:
+            # Отправляем фото трудовой
+            if workbook_image_id:
+                await context.bot.send_photo(
+                    chat_id=admin_id,
+                    photo=workbook_image_id,
+                    caption="Трудова книга"
+                )
+            # Отправляем фото доказательств
+            if work_evidence_image_id:
+                await context.bot.send_photo(
+                    chat_id=admin_id,
+                    photo=work_evidence_image_id,
+                    caption="Докази роботи"
+                )
+            # Отправляем основное сообщение
             await context.bot.send_message(
                 chat_id=admin_id,
-                text=admin_message,
+                text=admin_message_text,
                 parse_mode="HTML",
-                reply_markup=reply_markup,
-                disable_web_page_preview=False
+                reply_markup=reply_markup
             )
         except Exception as e:
             logger.error(f"Failed to send promotion request to admin {admin_id}: {e}")
@@ -1733,27 +1750,30 @@ async def view_promotion_request(update: Update, context: ContextTypes.DEFAULT_T
     """Показать детали конкретной заявки на повышение."""
     query = update.callback_query
     await query.answer()
-    
+
     if query.from_user.id not in ADMIN_IDS:
         await query.edit_message_text("❌ Ця функція доступна лише адміністраторам.")
         return
-    
-    # Извлекаем ID заявки из callback_data
-    request_id = int(query.data.split("_")[2])
-    
-    # Получаем заявку из БД
+
+    try:
+        # Извлекаем ID заявки из callback_data (может быть view_promotion_{id} или back_to_promotions_list)
+        if query.data.startswith("view_promotion_"):
+            request_id = int(query.data.split("_")[-1])
+        else: # back_to_promotions_list
+            await show_pending_promotions(update, context)
+            return
+    except (ValueError, IndexError):
+        await query.edit_message_text("Помилка: невірний ID заявки.")
+        return
+
     request = get_promotion_request(request_id)
     if not request:
         await query.edit_message_text("❌ Заявка не знайдена.")
         return
-    
-    if request["status"] != "pending":
-        await query.edit_message_text(
-            f"ℹ️ Заявка №{request_id} вже оброблена.\n"
-            f"Статус: {request['status']}"
-        )
-        return
-    
+
+    # Удаляем предыдущее сообщение (список заявок)
+    await query.delete_message()
+
     # Формируем детальное сообщение с заявкой
     created_date = request['created_at'][:19] if request['created_at'] else 'N/A'
     
@@ -1764,28 +1784,41 @@ async def view_promotion_request(update: Update, context: ContextTypes.DEFAULT_T
         f"📊 <b>Поточний ранг:</b> {request['current_rank']}\n"
         f"📈 <b>Бажаний ранг:</b> {request['target_rank']}\n"
         f"📅 <b>Дата подачі:</b> {created_date}\n\n"
-        f"📋 <b>Трудова книга:</b> [переглянути]({request['workbook_image']})\n"
-        f"📸 <b>Докази роботи:</b> [переглянути]({request['work_evidence_image']})\n\n"
-        f"⏳ <b>Статус:</b> Очікує модерації"
+        f"⏳ <b>Статус:</b> {request['status']}"
     )
-    
+
+    # Отправляем фото
+    if request.get("workbook_image_id"):
+        await context.bot.send_photo(
+            chat_id=query.from_user.id,
+            photo=request["workbook_image_id"],
+            caption="Трудова книга"
+        )
+    if request.get("work_evidence_image_id"):
+        await context.bot.send_photo(
+            chat_id=query.from_user.id,
+            photo=request["work_evidence_image_id"],
+            caption="Докази роботи"
+        )
+
     # Кнопки для модерации
-    keyboard = [
-        [
+    keyboard = []
+    if request['status'] == 'pending':
+        keyboard.append([
             InlineKeyboardButton("✅ Одобрити", callback_data=f"approve_promotion_{request_id}"),
             InlineKeyboardButton("❌ Відхилити", callback_data=f"reject_promotion_{request_id}")
-        ],
-        [
-            InlineKeyboardButton("🔙 Назад до списку", callback_data="back_to_promotions_list")
-        ]
-    ]
-    reply_markup = InlineKeyboardMarkup(keyboard)
+        ])
     
-    await query.edit_message_text(
-        message_text,
+    keyboard.append([
+        InlineKeyboardButton("🔙 Назад до списку", callback_data="list_pending_promotions")
+    ])
+    reply_markup = InlineKeyboardMarkup(keyboard)
+
+    await context.bot.send_message(
+        chat_id=query.from_user.id,
+        text=message_text,
         parse_mode="HTML",
-        reply_markup=reply_markup,
-        disable_web_page_preview=False
+        reply_markup=reply_markup
     )
 
 async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
