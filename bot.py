@@ -583,7 +583,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         is_admin = user.id in ADMIN_IDS
         keyboard_rows = [["📝 Заява на неактив"]]
         if is_admin:
-            keyboard_rows.append(["📝 Оформити догану"])
+            keyboard_rows.append(["�️ Адмін-команди"])  # Перемикач у адмін-меню
         reply_kb = ReplyKeyboardMarkup(keyboard_rows, resize_keyboard=True)
 
         text = (
@@ -1857,6 +1857,27 @@ async def broadcast_fill_profiles(update: Update, context: ContextTypes.DEFAULT_
     )
     await update.message.reply_text(text, parse_mode="HTML")
 
+async def open_admin_menu(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Відкрити адмін-меню (тільки для адмінів)."""
+    if update.effective_user.id not in ADMIN_IDS:
+        # Ігноруємо або відповідаємо відмовою
+        await update.message.reply_text("❌ Немає доступу.")
+        return
+    kb = ReplyKeyboardMarkup([
+        ["📝 Оформити догану"],
+        ["/admin_help"],
+        ["🔙 Звичайні команди"],
+    ], resize_keyboard=True)
+    await update.message.reply_text("🛡️ Адмін-меню відкрито.", reply_markup=kb)
+
+async def open_user_menu(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Повернутись до звичайного меню (у всіх користувачів)."""
+    kb_rows = [["📝 Заява на неактив"]]
+    if update.effective_user.id in ADMIN_IDS:
+        kb_rows.append(["🛡️ Адмін-команди"])
+    kb = ReplyKeyboardMarkup(kb_rows, resize_keyboard=True)
+    await update.message.reply_text("🔙 Повернувся до звичайного меню.", reply_markup=kb)
+
 def _format_profile(profile: dict) -> str:
     return (
         "👤 <b>Профіль</b>\n\n"
@@ -2052,6 +2073,9 @@ def main() -> None:
     application.add_handler(CommandHandler("broadcast_fill", broadcast_fill_profiles))
     application.add_handler(CommandHandler("user", user_lookup_command))
     application.add_handler(CommandHandler("find", find_profiles_command))
+    # Перемикачі меню для адмінів
+    application.add_handler(MessageHandler(filters.Regex("^🛡️ Адмін-команди$"), open_admin_menu))
+    application.add_handler(MessageHandler(filters.Regex("^🔙 Звичайні команди$"), open_user_menu))
 
     # Попередньо обробляємо вибір покарання (inline) до загального кнопкового хендлера
     application.add_handler(CallbackQueryHandler(dogana_punish_selected, pattern=r"^dogana_punish_"))
