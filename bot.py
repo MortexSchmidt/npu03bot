@@ -589,17 +589,24 @@ async def dogana_date(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int
         return DOGANA_DATE
     
     context.user_data["dogana_form"]["date"] = date_text
+    # Підтримка попереднього вибору через /find (за замовчуванням)
+    prefill_to = context.user_data.get("dogana_prefill_to")
+    hint = (f"\nЗа замовчуванням: <code>{prefill_to}</code>\n"
+            "Введіть 'за замовчуванням' або напишіть інше ім'я") if prefill_to else ""
     await update.message.reply_text(
         "📝 <b>ОФОРМЛЕННЯ ДОГАНИ</b>\n\n"
         "🔸 <b>Крок 3 з 5:</b> Порушник\n\n"
         "Введіть ім'я та прізвище особи, якій видається догана:\n"
-        "<i>(українською мовою, повне ім'я та прізвище)</i>",
+        "<i>(українською мовою, повне ім'я та прізвище)</i>" + hint,
         parse_mode="HTML"
     )
     return DOGANA_TO
 
 async def dogana_to(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     raw = update.message.text.strip()
+    # Дозволяємо 'за замовчуванням' для використання префіла з /find
+    if raw.lower() == "за замовчуванням" and context.user_data.get("dogana_prefill_to"):
+        raw = context.user_data.get("dogana_prefill_to")
     rank, name_text = parse_ranked_name(raw)
     
     # Перевірка українських символів та формату імені
@@ -628,6 +635,8 @@ async def dogana_to(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     
     context.user_data["dogana_form"]["to_whom"] = name_text
     context.user_data["dogana_form"]["rank_to"] = rank
+    # Після використання префіла — приберемо його
+    context.user_data.pop("dogana_prefill_to", None)
     # Пропонуємо автозаповнення хто видав
     admin_name = f"{update.effective_user.first_name} {update.effective_user.last_name or ''}".strip()
     await update.message.reply_text(
@@ -1584,10 +1593,53 @@ async def find_profiles_command(update: Update, context: ContextTypes.DEFAULT_TY
     if not results:
         await update.message.reply_text("Нічого не знайдено.")
         return
-    chunks = [
-        _format_profile(p) for p in results
-    ]
-    await update.message.reply_text("\n\n".join(chunks), parse_mode="HTML", disable_web_page_preview=True)
+    # Кожен профіль — окремим повідомленням з кнопками дій (тільки для адмінів)
+    for p in results:
+        kb = InlineKeyboardMarkup([
+            [
+                InlineKeyboardButton("🚫 Обмежити доступ (вигнати)", callback_data=f"admin_kick_{p['telegram_id']}"),
+            ],
+            [
+                InlineKeyboardButton("⚠️ Догана", callback_data=f"admin_warn_{p['telegram_id']}")
+            ]
+        ])
+        await update.message.reply_text(_format_profile(p), reply_markup=kb, parse_mode="HTML", disable_web_page_preview=True)
+
+async def handle_admin_user_action(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Обробка адмінських дій з /find: вигнати з групи або підготувати догану."""
+    query = update.callback_query
+    await query.answer()
+    if query.from_user.id not in ADMIN_IDS:
+        await query.edit_message_text("❌ Немає доступу.")
+        return
+    data = query.data
+    if data.startswith("admin_kick_"):
+        target_id = int(data.split("_")[2])
+        chat_id = REPORTS_CHAT_ID
+        try:
+            await context.bot.ban_chat_member(chat_id=chat_id, user_id=target_id)
+            await context.bot.unban_chat_member(chat_id=chat_id, user_id=target_id)
+            await query.edit_message_text(f"🚫 Користувача {target_id} вигнано з групи.")
+        except Exception as e:
+            await query.edit_message_text(f"⚠️ Не вдалося вигнати користувача {target_id}: {e}")
+    elif data.startswith("admin_warn_"):
+        target_id = int(data.split("_")[2])
+        # Отримаємо профіль, щоб підставити Ім'я та, за наявності, звання
+        prof = get_profile(target_id)
+        disp = None
+        if prof:
+            disp = display_ranked_name(prof.get('rank'), prof.get('in_game_name') or prof.get('full_name_tg') or '')
+        if disp:
+            context.user_data["dogana_prefill_to"] = disp
+            await query.edit_message_text(
+                "⚠️ Підготовка догани\n\n"
+                f"За замовчуванням: <code>{disp}</code>\n"
+                "Натисніть /dogana, і на кроці 'Порушник' введіть 'за замовчуванням' або вкажіть інше ім'я.",
+                parse_mode="HTML"
+            )
+        else:
+            await query.edit_message_text(
+                "⚠️ Не знайдено профіль для префілу. Натисніть /dogana та вкажіть ім'я вручну.")
 
 async def me_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Показати збережений профіль користувача."""
@@ -1667,6 +1719,8 @@ def main() -> None:
     application.add_handler(CallbackQueryHandler(dogana_punish_selected, pattern=r"^dogana_punish_"))
     # Ограничиваем общий обработчик кнопок, чтобы не перехватывать approve_neaktyv_/reject_neaktyv_
     application.add_handler(CallbackQueryHandler(button_handler, pattern=r"^(request_access|npu_.+|rank_\d+|approve_\d+|reject_\d+)$"))
+    # Адмінські кнопки з /find
+    application.add_handler(CallbackQueryHandler(handle_admin_user_action, pattern=r"^admin_(kick|warn)_\d+$"))
 
     # Діалоги: Догани (адміністраторам)
     dogana_conv = ConversationHandler(
