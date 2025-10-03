@@ -2,8 +2,16 @@ import os
 import logging
 import re
 import requests
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
-from telegram.ext import Application, CommandHandler, CallbackQueryHandler, ContextTypes, MessageHandler, filters
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, ReplyKeyboardMarkup, ReplyKeyboardRemove
+from telegram.ext import (
+    Application,
+    CommandHandler,
+    CallbackQueryHandler,
+    ContextTypes,
+    MessageHandler,
+    filters,
+    ConversationHandler,
+)
 
 # Налаштування логування
 logging.basicConfig(
@@ -22,6 +30,20 @@ ADMIN_IDS = [int(admin_id.strip()) for admin_id in ADMIN_IDS_STR.split(',')]
 
 GROUP_CHAT_ID = os.getenv("GROUP_CHAT_ID")  # ID групи для створення запрошень
 GROUP_INVITE_LINK = "https://t.me/+RItcaiRa-KU5ZThi"  # Основна ссылка (резервна)
+
+# Додаткові налаштування для відправки в теми (forum topics)
+def _int_or_none(val: str | None):
+    try:
+        return int(val) if val is not None and val != "" else None
+    except Exception:
+        return None
+
+# Основний чат для звітів/тем: беремо з REPORTS_CHAT_ID, інакше GROUP_CHAT_ID, інакше з посилань на теми
+REPORTS_CHAT_ID = _int_or_none(os.getenv("REPORTS_CHAT_ID")) or _int_or_none(os.getenv("GROUP_CHAT_ID")) or -1003191532549
+
+# ID тем за замовчуванням з ваших посилань
+WARNINGS_TOPIC_ID = _int_or_none(os.getenv("WARNINGS_TOPIC_ID")) or 146
+AFK_TOPIC_ID = _int_or_none(os.getenv("AFK_TOPIC_ID")) or 152
 
 # Стани користувача
 PENDING_REQUESTS = {}
@@ -126,21 +148,185 @@ async def create_invite_link(context: ContextTypes.DEFAULT_TYPE, user_name: str)
         return GROUP_INVITE_LINK
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Обробник команди /start"""
+    """Обробник команди /start: різна поведінка для членів групи та тих, хто ще не в групі"""
     user = update.effective_user
-    
-    keyboard = [
-        [InlineKeyboardButton("📝 Подати заявку на доступ", callback_data="request_access")]
-    ]
-    reply_markup = InlineKeyboardMarkup(keyboard)
-    
-    welcome_message = (
-        f"Вітаю, {user.first_name}! 👋\n\n"
-        "Це бот для отримання доступу до групи поліції UKRAINE GTA.\n\n"
-        "Щоб отримати доступ до групи, натисніть кнопку нижче та заповніть заявку."
+
+    # Перевірка членства у групі
+    user_is_member = False
+    if REPORTS_CHAT_ID:
+        try:
+            member = await context.bot.get_chat_member(REPORTS_CHAT_ID, user.id)
+            user_is_member = member.status in {"member", "administrator", "creator"}
+        except Exception as e:
+            logger.warning(f"Не вдалося перевірити членство користувача {user.id}: {e}")
+
+    if user_is_member:
+        # Показуємо меню взаємодії (кнопки під полем вводу)
+        is_admin = user.id in ADMIN_IDS
+        keyboard_rows = [["📝 Заявка в АФК"]]
+        if is_admin:
+            keyboard_rows.append(["⚠️ Виговор"])
+        reply_kb = ReplyKeyboardMarkup(keyboard_rows, resize_keyboard=True)
+
+        text = (
+            f"Вітаю, {user.first_name}! 👋\n\n"
+            "Я готовий до роботи з вами у групі. Оберіть дію нижче:"
+        )
+        await update.message.reply_text(text, reply_markup=reply_kb)
+    else:
+        # Користувач ще не в групі — стара логіка отримання доступу
+        keyboard = [
+            [InlineKeyboardButton("📝 Подати заявку на доступ", callback_data="request_access")]
+        ]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+
+        welcome_message = (
+            f"Вітаю, {user.first_name}! 👋\n\n"
+            "Це бот для отримання доступу до групи поліції UKRAINE GTA.\n\n"
+            "Щоб отримати доступ до групи, натисніть кнопку нижче та заповніть заявку."
+        )
+        await update.message.reply_text(welcome_message, reply_markup=reply_markup)
+
+############################
+# ВИГОВОРИ (адмінам)
+############################
+
+# Стані для діалогу 'виговор'
+WARN_OFFENSE, WARN_DATE, WARN_TO, WARN_BY, WARN_PUNISH = range(5)
+
+async def warn_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    user = update.effective_user
+    if user.id not in ADMIN_IDS:
+        await update.message.reply_text("❌ У вас немає доступу до цієї дії.")
+        return ConversationHandler.END
+    context.user_data["warn_form"] = {}
+    await update.message.reply_text("Введіть, будь ласка, опис порушення (Порушення):", reply_markup=ReplyKeyboardRemove())
+    return WARN_OFFENSE
+
+async def warn_offense(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    context.user_data["warn_form"]["offense"] = update.message.text.strip()
+    await update.message.reply_text("Вкажіть дату порушення (формат довільний):")
+    return WARN_DATE
+
+async def warn_date(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    context.user_data["warn_form"]["date"] = update.message.text.strip()
+    await update.message.reply_text("Кому було видано покарання (ПІБ/нік/ID):")
+    return WARN_TO
+
+async def warn_to(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    context.user_data["warn_form"]["to_whom"] = update.message.text.strip()
+    # Пропонуємо автозаповнення хто видав
+    admin_name = f"{update.effective_user.first_name} {update.effective_user.last_name or ''}".strip()
+    await update.message.reply_text(
+        "Хто видав покарання (можете змінити або залишити як є):\n" f"За замовчуванням: {admin_name}"
     )
-    
-    await update.message.reply_text(welcome_message, reply_markup=reply_markup)
+    context.user_data["warn_form"]["default_by"] = admin_name
+    return WARN_BY
+
+async def warn_by(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    text = update.message.text.strip()
+    by_whom = text if text and text.lower() != "за замовчуванням" else context.user_data["warn_form"].get("default_by")
+    context.user_data["warn_form"]["by_whom"] = by_whom
+
+    # Вибір покарання через inline кнопки
+    kb = InlineKeyboardMarkup([
+        [
+            InlineKeyboardButton("Догана", callback_data="warn_punish_dogana"),
+            InlineKeyboardButton("Попередження", callback_data="warn_punish_poperedzhennya"),
+        ]
+    ])
+    await update.message.reply_text("Оберіть вид покарання:", reply_markup=kb)
+    return WARN_PUNISH
+
+async def warn_punish_selected(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    query = update.callback_query
+    await query.answer()
+    kind = "Догана" if query.data.endswith("dogana") else "Попередження"
+    form = context.user_data.get("warn_form", {})
+
+    text = (
+        "🔔 ВИГОВОР\n\n"
+        f"1. Порушення: {form.get('offense')}\n"
+        f"2. Дата порушення: {form.get('date')}\n"
+        f"3. Кому видано: {form.get('to_whom')}\n"
+        f"4. Хто видав: {form.get('by_whom')}\n"
+        f"5. Покарання: {kind}"
+    )
+    try:
+        await context.bot.send_message(
+            chat_id=REPORTS_CHAT_ID,
+            text=text,
+            message_thread_id=WARNINGS_TOPIC_ID,
+            disable_web_page_preview=True,
+        )
+        await query.edit_message_text("✅ Виговор оформлено та відправлено у тему.")
+    except Exception as e:
+        logger.error(f"Помилка відправки виговору: {e}")
+        await query.edit_message_text("⚠️ Не вдалося відправити у тему. Перевірте права бота та ID теми.")
+    finally:
+        context.user_data.pop("warn_form", None)
+    return ConversationHandler.END
+
+async def warn_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    context.user_data.pop("warn_form", None)
+    await update.message.reply_text("Скасовано.", reply_markup=ReplyKeyboardRemove())
+    return ConversationHandler.END
+
+############################
+# ЗАЯВКИ В АФК (усі користувачі)
+############################
+
+AFK_TO, AFK_BY, AFK_TIME, AFK_DEPT = range(4)
+
+async def afk_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    context.user_data["afk_form"] = {}
+    await update.message.reply_text("Кому надається (ПІБ/нік/ID):", reply_markup=ReplyKeyboardRemove())
+    return AFK_TO
+
+async def afk_to(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    context.user_data["afk_form"]["to_whom"] = update.message.text.strip()
+    await update.message.reply_text("Хто надав (ПІБ/нік/ID):")
+    return AFK_BY
+
+async def afk_by(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    context.user_data["afk_form"]["by_whom"] = update.message.text.strip()
+    await update.message.reply_text("На скільки (час):")
+    return AFK_TIME
+
+async def afk_time(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    context.user_data["afk_form"]["duration"] = update.message.text.strip()
+    await update.message.reply_text("Підрозділ:")
+    return AFK_DEPT
+
+async def afk_dept(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    context.user_data["afk_form"]["department"] = update.message.text.strip()
+    form = context.user_data.get("afk_form", {})
+    text = (
+        "🟦 ЗАЯВКА В АФК\n\n"
+        f"1. Кому надається: {form.get('to_whom')}\n"
+        f"2. Хто надав: {form.get('by_whom')}\n"
+        f"3. На скільки (час): {form.get('duration')}\n"
+        f"4. Підрозділ: {form.get('department')}"
+    )
+    try:
+        await context.bot.send_message(
+            chat_id=REPORTS_CHAT_ID,
+            text=text,
+            message_thread_id=AFK_TOPIC_ID,
+            disable_web_page_preview=True,
+        )
+        await update.message.reply_text("✅ Заявку в АФК відправлено у тему.")
+    except Exception as e:
+        logger.error(f"Помилка відправки АФК: {e}")
+        await update.message.reply_text("⚠️ Не вдалося відправити у тему. Перевірте права бота та ID теми.")
+    finally:
+        context.user_data.pop("afk_form", None)
+    return ConversationHandler.END
+
+async def afk_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    context.user_data.pop("afk_form", None)
+    await update.message.reply_text("Скасовано.", reply_markup=ReplyKeyboardRemove())
+    return ConversationHandler.END
 
 async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Обробник натискань на кнопки"""
@@ -530,7 +716,41 @@ def main() -> None:
     # Додаємо обробники
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CommandHandler("admin", admin_command))
+
+    # Попередньо обробляємо вибір покарання (inline) до загального кнопкового хендлера
+    application.add_handler(CallbackQueryHandler(warn_punish_selected, pattern=r"^warn_punish_"))
     application.add_handler(CallbackQueryHandler(button_handler))
+
+    # Діалоги: Виговор (адмінам)
+    warn_conv = ConversationHandler(
+        entry_points=[CommandHandler("warn", warn_start), MessageHandler(filters.Regex("^⚠️ Виговор$"), warn_start)],
+        states={
+            WARN_OFFENSE: [MessageHandler(filters.TEXT & ~filters.COMMAND, warn_offense)],
+            WARN_DATE: [MessageHandler(filters.TEXT & ~filters.COMMAND, warn_date)],
+            WARN_TO: [MessageHandler(filters.TEXT & ~filters.COMMAND, warn_to)],
+            WARN_BY: [MessageHandler(filters.TEXT & ~filters.COMMAND, warn_by)],
+            WARN_PUNISH: [CallbackQueryHandler(warn_punish_selected, pattern=r"^warn_punish_")],
+        },
+        fallbacks=[CommandHandler("cancel", warn_cancel)],
+        allow_reentry=True,
+    )
+    application.add_handler(warn_conv)
+
+    # Діалоги: Заявка в АФК (всі)
+    afk_conv = ConversationHandler(
+        entry_points=[CommandHandler("afk", afk_start), MessageHandler(filters.Regex("^📝 Заявка в АФК$"), afk_start)],
+        states={
+            AFK_TO: [MessageHandler(filters.TEXT & ~filters.COMMAND, afk_to)],
+            AFK_BY: [MessageHandler(filters.TEXT & ~filters.COMMAND, afk_by)],
+            AFK_TIME: [MessageHandler(filters.TEXT & ~filters.COMMAND, afk_time)],
+            AFK_DEPT: [MessageHandler(filters.TEXT & ~filters.COMMAND, afk_dept)],
+        },
+        fallbacks=[CommandHandler("cancel", afk_cancel)],
+        allow_reentry=True,
+    )
+    application.add_handler(afk_conv)
+
+    # Існуючі текстові повідомлення анкети
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_application_text))
     
     # Запускаємо бота
