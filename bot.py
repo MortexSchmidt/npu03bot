@@ -64,11 +64,56 @@ AFK_TOPIC_ID = _int_or_none(os.getenv("AFK_TOPIC_ID")) or 152
 PENDING_REQUESTS = {}
 USER_APPLICATIONS = {}  # Зберігання даних заявок користувачів
 
-# Доступні управління НПУ
+# Підрозділи НПУ (UKRAINE GTA) з описами
 NPU_DEPARTMENTS = {
-    "dnipro": "🏛️ Управління НПУ в Дніпрі",
-    "kharkiv": "🏛️ Управління НПУ в Харкові", 
-    "kyiv": "🏛️ Управління НПУ в Києві"
+    # 1. НАВС / ХНУВС
+    "navs": {
+        "title": "Національна академія внутрішніх справ (НАВС / ХНУВС)",
+        "tag": "[ХНУВС]",
+        "location": "перебуває при ГУНП м. Харкова",
+        "eligibility": "вступ до НПУ — автоматичне зарахування",
+        "desc": "Провідний навчальний заклад МВС для підготовки, перепідготовки та підвищення кваліфікації працівників поліції; наукові дослідження, міжнародна співпраця.",
+    },
+    # 2. КОРД
+    "kord": {
+        "title": "Корпус Оперативно-Раптових Дій (КОРД)",
+        "tag": "[КОРД]",
+        "location": "перебуває в УНПУ м. Дніпра",
+        "eligibility": "з 4-го порядкового звання",
+        "desc": "Елітний спецпідрозділ: штурмові/антитерористичні операції, звільнення заручників, нейтралізація озброєних злочинців, взаємодія з іншими підрозділами.",
+    },
+    # 3. ДПП
+    "dpp": {
+        "title": "Департамент Патрульної Поліції (ДПП)",
+        "tag": "[ДПП]",
+        "location": "перебуває в УНПУ м. Харкова",
+        "eligibility": "з 3-го порядкового звання",
+        "desc": "Патрулювання, реагування на виклики, профілактика правопорушень, ПДР, оформлення адмінправопорушень, перша допомога при ДТП.",
+    },
+    # 4. ГСУ
+    "gsu": {
+        "title": "Головне Слідче Управління (ГСУ)",
+        "tag": "[ГСУ]",
+        "location": "перебуває в ГУНПУ м. Києва",
+        "eligibility": "офіцерський склад, спец. у кримінальному процесі",
+        "desc": "Досудове розслідування особливо тяжких злочинів, координація регіональних слідчих, взаємодія з прокуратурою та спецслужбами.",
+    },
+    # 5. ДВБ
+    "dvb": {
+        "title": "Департамент Внутрішньої Безпеки (ДВБ)",
+        "tag": "[ДВБ]",
+        "location": "перебуває в ГУНПУ м. Києва",
+        "eligibility": "відбір у спеціалізований підрозділ",
+        "desc": "Протидія корупції та злочинам у поліції, службові розслідування, оперативні заходи, взаємодія з антикорупційними органами.",
+    },
+    # 6. НЦУП
+    "ncup": {
+        "title": "Національний Центр Управління Поліцією (НЦУП)",
+        "tag": "[НЦУП]",
+        "location": "перебуває в ГУНПУ м. Києва",
+        "eligibility": "центральний оперативно-аналітичний підрозділ",
+        "desc": "Координація підрозділів у реальному часі, диспетчеризація 102, аналітика, підтримка інформаційних систем і кібербезпека.",
+    },
 }
 
 # Список звань НПУ для UKRAINE GTA (по порядку)
@@ -525,7 +570,7 @@ async def neaktyv_dept(update: Update, context: ContextTypes.DEFAULT_TYPE) -> in
     
     # Зберігаємо заявку в БД
     try:
-        insert_neaktyv_request(
+        request_id = insert_neaktyv_request(
             requester_id=user_id,
             requester_username=username,
             to_whom=form.get('to_whom') or '',
@@ -533,6 +578,8 @@ async def neaktyv_dept(update: Update, context: ContextTypes.DEFAULT_TYPE) -> in
             duration=form.get('duration') or '',
             department=form.get('department') or '',
         )
+        # збережемо id заявки, щоб модераторське рішення оновило саме її
+        context.bot_data[f"neaktyv_req_id_{user_id}"] = request_id
     except Exception as dbe:
         logger.error(f"DB insert neaktyv failed: {dbe}")
 
@@ -676,13 +723,14 @@ async def process_neaktyv_approval_name(update: Update, context: ContextTypes.DE
             )
             # Лог рішення в БД
             try:
-                # Беремо останню заявку цього користувача як ціль рішення
-                decide_neaktyv_request(
-                    request_id=0,  # буде оновлено нижче після пошуку, поки заглушка
-                    status='approved',
-                    moderator_name=name,
-                    moderator_user_id=update.effective_user.id,
-                )
+                req_id = context.bot_data.get(f"neaktyv_req_id_{user_id}")
+                if req_id:
+                    decide_neaktyv_request(
+                        request_id=req_id,
+                        status='approved',
+                        moderator_name=name,
+                        moderator_user_id=update.effective_user.id,
+                    )
             except Exception as dbe:
                 logger.error(f"DB decide neaktyv approve failed: {dbe}")
             await update.message.reply_text(f"✅ Заяву одобрено та опубліковано в групі!")
@@ -713,12 +761,14 @@ async def process_neaktyv_approval_name(update: Update, context: ContextTypes.DE
             )
             # Лог рішення в БД
             try:
-                decide_neaktyv_request(
-                    request_id=0,  # заглушка, аналогічно
-                    status='rejected',
-                    moderator_name=name,
-                    moderator_user_id=update.effective_user.id,
-                )
+                req_id = context.bot_data.get(f"neaktyv_req_id_{user_id}")
+                if req_id:
+                    decide_neaktyv_request(
+                        request_id=req_id,
+                        status='rejected',
+                        moderator_name=name,
+                        moderator_user_id=update.effective_user.id,
+                    )
             except Exception as dbe:
                 logger.error(f"DB decide neaktyv reject failed: {dbe}")
             await update.message.reply_text(f"❌ Заяву відхилено.")
@@ -843,8 +893,8 @@ async def handle_name_input(update: Update, context: ContextTypes.DEFAULT_TYPE) 
     
     # Створюємо кнопки для вибору НПУ
     keyboard = []
-    for code, title in NPU_DEPARTMENTS.items():
-        keyboard.append([InlineKeyboardButton(title, callback_data=f"npu_{code}")])
+    for code, meta in NPU_DEPARTMENTS.items():
+        keyboard.append([InlineKeyboardButton(meta["title"], callback_data=f"npu_{code}")])
     
     reply_markup = InlineKeyboardMarkup(keyboard)
     
@@ -872,9 +922,9 @@ async def select_npu_department(update: Update, context: ContextTypes.DEFAULT_TY
         return
     
     # Зберігаємо вибір НПУ
-    USER_APPLICATIONS[user_id]['npu_department'] = NPU_DEPARTMENTS[npu_code]
+    USER_APPLICATIONS[user_id]['npu_department'] = NPU_DEPARTMENTS[npu_code]["title"]
     # Оновлюємо підрозділ у профілі
-    update_profile_fields(user_id, npu_department=NPU_DEPARTMENTS[npu_code])
+    update_profile_fields(user_id, npu_department=NPU_DEPARTMENTS[npu_code]["title"])
     USER_APPLICATIONS[user_id]['step'] = 'waiting_rank'
     context.user_data['step'] = 'waiting_rank'
 
@@ -888,11 +938,15 @@ async def select_npu_department(update: Update, context: ContextTypes.DEFAULT_TY
             row = []
     if row:
         rank_buttons.append(row)
-    await query.edit_message_text(
-        f"✅ Управління НПУ обрано: {NPU_DEPARTMENTS[npu_code]}\n\n"
-        "📝 Крок 3: Оберіть ваше звання",
-        reply_markup=InlineKeyboardMarkup(rank_buttons)
+    meta = NPU_DEPARTMENTS[npu_code]
+    desc = (
+        f"✅ Обрано підрозділ: <b>{meta['title']}</b> {meta['tag']}\n"
+        f"Місце: {meta['location']}\n"
+        f"Допуск: {meta['eligibility']}\n\n"
+        f"{meta['desc']}\n\n"
+        "📝 Крок 3: Оберіть ваше звання"
     )
+    await query.edit_message_text(desc, reply_markup=InlineKeyboardMarkup(rank_buttons), parse_mode="HTML")
 
 async def handle_image_urls_application(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Обробник посилань на зображення для заявок"""
