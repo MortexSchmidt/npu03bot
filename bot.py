@@ -63,6 +63,9 @@ AFK_TOPIC_ID = _int_or_none(os.getenv("AFK_TOPIC_ID")) or 152
 # Стани користувача
 PENDING_REQUESTS = {}
 USER_APPLICATIONS = {}  # Зберігання даних заявок користувачів
+ 
+# Тимчасовий рефіл профілю (стани діалогу)
+REFILL_NAME, REFILL_NPU, REFILL_RANK, REFILL_IMAGES = range(4)
 
 # Підрозділи НПУ (UKRAINE GTA) з описами
 NPU_DEPARTMENTS = {
@@ -216,6 +219,158 @@ def validate_image_urls(urls: list) -> tuple:
             invalid_urls.append(url)
     
     return valid_urls, invalid_urls
+
+# ===== Тимчасова команда для повторного заповнення профілю =====
+async def refill_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Старт тимчасового майстра перезаповнення профілю для вже зареєстрованих."""
+    user = update.effective_user
+    profile = get_profile(user.id)
+    if not profile:
+        await update.message.reply_text(
+            "ℹ️ Профіль ще не створено. Спочатку скористайтесь /start для первинної заявки.")
+        return ConversationHandler.END
+
+    context.user_data["refill_form"] = {}
+    existing = profile.get("in_game_name") or ""
+    hint = f" Поточне: {existing}" if existing else ""
+    await update.message.reply_text(
+        "🛠️ <b>Оновлення профілю (тимчасово)</b>\n\n"
+        "🔸 Крок 1 з 4: Ім'я у грі\n\n"
+        "Введіть <i>ім'я та прізвище українською</i> (повністю)." + hint,
+        reply_markup=ReplyKeyboardRemove(),
+        parse_mode="HTML",
+    )
+    return REFILL_NAME
+
+async def refill_name(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    name_input = update.message.text.strip()
+    if not is_ukrainian_name(name_input):
+        await update.message.reply_text(
+            "❌ Ім'я та прізвище мають бути українською мовою!\n\n"
+            "Приклади: \n"
+            "✅ Олександр Іваненко\n"
+            "✅ Марія Петренко-Коваленко\n\n"
+            "Спробуйте ще раз:")
+        return REFILL_NAME
+    context.user_data.setdefault("refill_form", {})["in_game_name"] = name_input
+
+    # Крок 2: вибір підрозділу
+    keyboard = []
+    for code, meta in NPU_DEPARTMENTS.items():
+        keyboard.append([InlineKeyboardButton(meta["title"], callback_data=f"refill_npu_{code}")])
+    await update.message.reply_text(
+        "🔸 Крок 2 з 4: Підрозділ НПУ\n\nОберіть ваш підрозділ:",
+        reply_markup=InlineKeyboardMarkup(keyboard),
+    )
+    return REFILL_NPU
+
+async def refill_select_npu(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    query = update.callback_query
+    await query.answer()
+    parts = query.data.split("_", 2)
+    # data формат: refill_npu_<code>
+    if len(parts) < 3:
+        await query.edit_message_text("❌ Невірні дані вибору підрозділу.")
+        return ConversationHandler.END
+    npu_code = parts[2]
+    if npu_code not in NPU_DEPARTMENTS:
+        await query.edit_message_text("❌ Невідомий підрозділ.")
+        return ConversationHandler.END
+
+    meta = NPU_DEPARTMENTS[npu_code]
+    form = context.user_data.setdefault("refill_form", {})
+    form["npu_department"] = meta["title"]
+    form["npu_code"] = npu_code
+
+    # Показати картку та вибір звання
+    rank_buttons = []
+    row = []
+    for idx, rank in enumerate(NPU_RANKS):
+        row.append(InlineKeyboardButton(rank, callback_data=f"refill_rank_{idx}"))
+        if len(row) == 2:
+            rank_buttons.append(row)
+            row = []
+    if row:
+        rank_buttons.append(row)
+
+    desc = (
+        f"✅ Обрано підрозділ: <b>{meta['title']}</b> {meta['tag']}\n"
+        f"Місце: {meta['location']}\n"
+        f"Допуск: {meta['eligibility']}\n\n"
+        f"{meta['desc']}\n\n"
+        "🔸 Крок 3 з 4: Оберіть ваше звання"
+    )
+    await query.edit_message_text(desc, reply_markup=InlineKeyboardMarkup(rank_buttons), parse_mode="HTML")
+    return REFILL_RANK
+
+async def refill_select_rank(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    query = update.callback_query
+    await query.answer()
+    try:
+        idx = int(query.data.split("_")[-1])
+    except Exception:
+        await query.edit_message_text("❌ Невірні дані вибору звання.")
+        return ConversationHandler.END
+    if not (0 <= idx < len(NPU_RANKS)):
+        await query.edit_message_text("❌ Невідоме звання.")
+        return ConversationHandler.END
+
+    rank = NPU_RANKS[idx]
+    context.user_data.setdefault("refill_form", {})["rank"] = rank
+    await query.edit_message_text(
+        f"✅ Звання обрано: {rank}\n\n"
+        "🔸 Крок 4 з 4: Надішліть 2 посилання на скріншоти (посвідчення та планшет).\n\n"
+        "Кожен URL з нового рядка. Підтримуються imgbb/imgur/postimg та ін.")
+    return REFILL_IMAGES
+
+async def refill_images(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    text = update.message.text.strip()
+    urls = [u.strip() for u in text.splitlines() if u.strip()]
+    if len(urls) < 2:
+        await update.message.reply_text(
+            "❌ Потрібно мінімум 2 посилання на зображення. Надішліть ще раз.")
+        return REFILL_IMAGES
+    valid, invalid = validate_image_urls(urls)
+    if invalid or len(valid) < 2:
+        bad = "\n".join(f"• {u}" for u in invalid) if invalid else ""
+        await update.message.reply_text(
+            ("❌ Деякі посилання некоректні:\n" + bad + "\n\n" if bad else "") +
+            "Надішліть 2+ валідних URL (imgbb/imgur/postimg).")
+        return REFILL_IMAGES
+
+    form = context.user_data.get("refill_form", {})
+    user = update.effective_user
+
+    # Оновлюємо профіль та зображення в БД
+    try:
+        update_profile_fields(
+            user.id,
+            in_game_name=form.get("in_game_name"),
+            npu_department=form.get("npu_department"),
+            rank=form.get("rank"),
+        )
+        replace_profile_images(user.id, valid)
+    except Exception as e:
+        logger.error(f"refill save failed: {e}")
+        await update.message.reply_text("⚠️ Сталася помилка при збереженні. Спробуйте ще раз пізніше.")
+        return ConversationHandler.END
+
+    # Підсумок
+    summary = (
+        "✅ <b>Профіль оновлено</b>\n\n"
+        "<blockquote>"
+        f"Ім'я у грі: {form.get('in_game_name')}\n"
+        f"Підрозділ: {form.get('npu_department')}\n"
+        f"Звання: {form.get('rank')}\n"
+        f"Фото: {len(valid)} посилання"
+        "</blockquote>\n\n"
+        "Дякуємо! Ця команда є <i>тимчасовою</i> і буде видалена після міграції."
+    )
+    await update.message.reply_text(summary, parse_mode="HTML", disable_web_page_preview=True)
+
+    # Очистка стану
+    context.user_data.pop("refill_form", None)
+    return ConversationHandler.END
 
 async def create_invite_link(context: ContextTypes.DEFAULT_TYPE, user_name: str) -> str:
     """Створює одноразове посилання-запрошення для користувача"""
@@ -1351,7 +1506,8 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         "• /start — запустити бота та показати меню\n"
         "• /help — ця довідка\n"
         "• /me — показати ваш збережений профіль\n"
-        "• /neaktyv — подати <i>заяву на неактив</i> (також є кнопка в меню)\n\n"
+    "• /neaktyv — подати <i>заяву на неактив</i> (також є кнопка в меню)\n"
+    "• /refill — <i>тимчасово</i>: перезаповнити ваш профіль для оновлень БД\n\n"
         "<b>Заява на доступ у групу</b>:\n"
         "1) Натисніть /start і дотримуйтесь інструкцій\n"
         "2) Введіть <i>ім'я та прізвище українською</i> (повністю)\n"
@@ -1436,6 +1592,20 @@ def main() -> None:
         allow_reentry=True,
     )
     application.add_handler(neaktyv_moderation_conv)
+
+    # Діалог тимчасового перезаповнення профілю
+    refill_conv = ConversationHandler(
+        entry_points=[CommandHandler("refill", refill_start)],
+        states={
+            REFILL_NAME: [MessageHandler(filters.TEXT & ~filters.COMMAND, refill_name)],
+            REFILL_NPU: [CallbackQueryHandler(refill_select_npu, pattern=r"^refill_npu_.+")],
+            REFILL_RANK: [CallbackQueryHandler(refill_select_rank, pattern=r"^refill_rank_\d+")],
+            REFILL_IMAGES: [MessageHandler(filters.TEXT & ~filters.COMMAND, refill_images)],
+        },
+        fallbacks=[CommandHandler("cancel", neaktyv_cancel)],
+        allow_reentry=True,
+    )
+    application.add_handler(refill_conv)
 
     # Існуючі текстові повідомлення анкети
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_application_text))
