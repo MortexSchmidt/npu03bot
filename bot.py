@@ -1,6 +1,8 @@
 import os
 import logging
 import re
+import time
+from collections import deque
 import requests
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, ReplyKeyboardMarkup, ReplyKeyboardRemove
 from telegram.ext import (
@@ -66,6 +68,97 @@ USER_APPLICATIONS = {}  # Зберігання даних заявок кори�
  
 # Тимчасовий рефіл профілю (стани діалогу)
 REFILL_NAME, REFILL_NPU, REFILL_RANK, REFILL_IMAGES = range(4)
+
+# ===== Антиспам (тротлінг) =====
+# Налаштування лімітів (у секундах)
+RATE_LIMITS = {
+    "message": {"window": 5.0, "max": 5, "min_interval": 0.5},   # Не більше 5 повідомлень за 5с, інтервал >= 0.5с
+    "callback": {"window": 10.0, "max": 8, "min_interval": 0.4}, # Не більше 8 кліків за 10с, інтервал >= 0.4с
+}
+
+def _rl_storage(context: ContextTypes.DEFAULT_TYPE) -> dict:
+    return context.application.bot_data.setdefault("_rate_limits", {})
+
+def _rl_get_user_bucket(context: ContextTypes.DEFAULT_TYPE, user_id: int) -> dict:
+    storage = _rl_storage(context)
+    if user_id not in storage:
+        storage[user_id] = {
+            "message": deque(),
+            "callback": deque(),
+            "last_event_time": {"message": 0.0, "callback": 0.0},
+            "last_warn": 0.0,
+        }
+    return storage[user_id]
+
+def _rate_limited(context: ContextTypes.DEFAULT_TYPE, user_id: int, kind: str) -> tuple[bool, float]:
+    """Повертає (is_limited, retry_after_sec). Обрізає старі події; застосовує min_interval та вікно."""
+    now = time.time()
+    cfg = RATE_LIMITS[kind]
+    bucket = _rl_get_user_bucket(context, user_id)
+    dq: deque = bucket[kind]
+    # Видалити старі події поза вікном
+    window = cfg["window"]
+    while dq and (now - dq[0]) > window:
+        dq.popleft()
+    # Перевірка інтервалу між подіями
+    last_t = bucket["last_event_time"].get(kind, 0.0)
+    min_i = cfg["min_interval"]
+    if now - last_t < min_i:
+        retry = max(0.1, min_i - (now - last_t))
+        return True, retry
+    # Перевірка кількості у вікні
+    if len(dq) >= cfg["max"]:
+        # Коли мине ліміт?
+        retry = max(0.1, window - (now - dq[0]))
+        return True, retry
+    # Додаємо подію
+    dq.append(now)
+    bucket["last_event_time"][kind] = now
+    return False, 0.0
+
+def _should_warn(context: ContextTypes.DEFAULT_TYPE, user_id: int, cooldown: float = 10.0) -> bool:
+    now = time.time()
+    bucket = _rl_get_user_bucket(context, user_id)
+    if now - bucket.get("last_warn", 0.0) >= cooldown:
+        bucket["last_warn"] = now
+        return True
+    return False
+
+async def anti_spam_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> bool:
+    """Pre-handler для повідомлень: відсікає спам. Повертає True, якщо поглинув оновлення."""
+    if not update.effective_user:
+        return False
+    user_id = update.effective_user.id
+    # Не обмежуємо адміністраторів
+    if user_id in ADMIN_IDS:
+        return False
+    limited, retry = _rate_limited(context, user_id, "message")
+    if limited:
+        if _should_warn(context, user_id):
+            try:
+                await update.effective_message.reply_text(
+                    f"⏳ Занадто часто. Зачекайте приблизно {int(retry)+1} сек.")
+            except Exception:
+                pass
+        return True  # не пропускаємо до інших хендлерів
+    return False
+
+async def anti_spam_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> bool:
+    """Pre-handler для кліків по кнопках: відсікає спам. Повертає True, якщо поглинув оновлення."""
+    query = update.callback_query
+    if not query or not query.from_user:
+        return False
+    user_id = query.from_user.id
+    if user_id in ADMIN_IDS:
+        return False
+    limited, retry = _rate_limited(context, user_id, "callback")
+    if limited:
+        try:
+            await query.answer(f"⏳ Повільніше, зачекайте ~{int(retry)+1} сек.", show_alert=False)
+        except Exception:
+            pass
+        return True
+    return False
 
 # Підрозділи НПУ (UKRAINE GTA) з описами
 NPU_DEPARTMENTS = {
@@ -1540,6 +1633,10 @@ def main() -> None:
     # Ініціалізуємо БД
     init_db()
     
+    # Pre-handlers: антиспам (найвищий пріоритет)
+    application.add_handler(MessageHandler(filters.ALL, anti_spam_message), group=-1)
+    application.add_handler(CallbackQueryHandler(anti_spam_callback, pattern=r".*"), group=-1)
+
     # Додаємо обробники
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CommandHandler("me", me_command))
