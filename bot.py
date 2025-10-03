@@ -777,7 +777,7 @@ async def neaktyv_time(update: Update, context: ContextTypes.DEFAULT_TYPE) -> in
         "🔸 Крок 3 з 3: Відділ\n\n"
         "Оберіть відділ НПУ:",
         reply_markup=ReplyKeyboardMarkup(
-            [[dept] for dept in NPU_DEPARTMENTS.keys()],
+            [[meta["title"]] for meta in NPU_DEPARTMENTS.values()],
             one_time_keyboard=True,
             resize_keyboard=True
         )
@@ -785,7 +785,20 @@ async def neaktyv_time(update: Update, context: ContextTypes.DEFAULT_TYPE) -> in
     return NEAKTYV_DEPARTMENT
 
 async def neaktyv_dept(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    context.user_data["neaktyv_form"]["department"] = update.message.text.strip()
+    # Приймаємо як код (navs/kord/...) так і повну назву; зберігаємо завжди повну назву
+    inp = update.message.text.strip()
+    dept_title = None
+    # Пряме співпадіння по коду
+    if inp in NPU_DEPARTMENTS:
+        dept_title = NPU_DEPARTMENTS[inp]["title"]
+    else:
+        # Пошук по назві (без регістру)
+        low = inp.lower()
+        for meta in NPU_DEPARTMENTS.values():
+            if meta["title"].lower() == low:
+                dept_title = meta["title"]
+                break
+    context.user_data["neaktyv_form"]["department"] = dept_title or inp
     form = context.user_data.get("neaktyv_form", {})
     
     # Формування повідомлення для адміністраторів
@@ -1300,7 +1313,8 @@ async def finalize_application(update: Update, context: ContextTypes.DEFAULT_TYP
     await update.message.reply_text(
         "✅ Вашу заявку повністю отримано!\n\n"
         f"👤 Ім'я: {user_data['name']}\n"
-        f"🏛️ НПУ: {user_data['npu_department']}\n"
+        f"🎖️ Звання: {user_data.get('rank') or '—'}\n"
+        f"🏛️ Підрозділ НПУ: {user_data.get('npu_department') or '—'}\n"
         f"🔗 Посилання на зображення: {len(user_data['image_urls'])}\n\n"
         "Очікуйте на розгляд адміністратором. "
         "Ви отримаєте повідомлення, коли заявку буде розглянуто."
@@ -1325,7 +1339,8 @@ async def finalize_application(update: Update, context: ContextTypes.DEFAULT_TYP
         f"📱 Нікнейм: @{user.username or 'немає'}\n\n"
         f"📝 Заявка:\n"
         f"👤 Ім'я: {user_data['name']}\n"
-        f"🏛️ НПУ: {user_data['npu_department']}\n\n"
+        f"🎖️ Звання: {user_data.get('rank') or '—'}\n"
+        f"🏛️ Підрозділ НПУ: {user_data.get('npu_department') or '—'}\n\n"
         f"🔗 Зображення ({len(user_data['image_urls'])}):\n{images_list}"
     )
 
