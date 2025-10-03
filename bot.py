@@ -14,6 +14,13 @@ from telegram.ext import (
 )
 from db import init_db, upsert_profile, update_profile_fields, get_profile
 from db import replace_profile_images
+from db import (
+    insert_warning,
+    insert_neaktyv_request,
+    decide_neaktyv_request,
+    insert_access_application,
+    decide_access_application,
+)
 from db import init_db, upsert_profile, update_profile_fields, get_profile
 try:
     from db import get_profile_by_username, search_profiles
@@ -377,6 +384,21 @@ async def dogana_punish_selected(update: Update, context: ContextTypes.DEFAULT_T
         "</blockquote>"
     )
     try:
+        # Логування в БД
+        try:
+            insert_warning(
+                offense=form.get('offense') or '',
+                date_text=form.get('date') or '',
+                to_whom=form.get('to_whom') or '',
+                rank_to=form.get('rank_to'),
+                by_whom=form.get('by_whom') or '',
+                kind=kind,
+                issued_by_user_id=query.from_user.id if query and query.from_user else None,
+                issued_by_username=(query.from_user.username if query and query.from_user else None),
+            )
+        except Exception as dbe:
+            logger.error(f"DB log warning failed: {dbe}")
+
         await context.bot.send_message(
             chat_id=REPORTS_CHAT_ID,
             text=text,
@@ -501,6 +523,19 @@ async def neaktyv_dept(update: Update, context: ContextTypes.DEFAULT_TYPE) -> in
     context.bot_data[f"neaktyv_form_{user_id}"] = form.copy()
     context.bot_data[f"neaktyv_form_{user_id}"]["author"] = author
     
+    # Зберігаємо заявку в БД
+    try:
+        insert_neaktyv_request(
+            requester_id=user_id,
+            requester_username=username,
+            to_whom=form.get('to_whom') or '',
+            rank=form.get('rank'),
+            duration=form.get('duration') or '',
+            department=form.get('department') or '',
+        )
+    except Exception as dbe:
+        logger.error(f"DB insert neaktyv failed: {dbe}")
+
     # Відправляємо адміністраторам
     for admin_id in ADMIN_IDS:
         try:
@@ -639,6 +674,17 @@ async def process_neaktyv_approval_name(update: Update, context: ContextTypes.DE
                 message_thread_id=AFK_TOPIC_ID,
                 parse_mode="HTML"
             )
+            # Лог рішення в БД
+            try:
+                # Беремо останню заявку цього користувача як ціль рішення
+                decide_neaktyv_request(
+                    request_id=0,  # буде оновлено нижче після пошуку, поки заглушка
+                    status='approved',
+                    moderator_name=name,
+                    moderator_user_id=update.effective_user.id,
+                )
+            except Exception as dbe:
+                logger.error(f"DB decide neaktyv approve failed: {dbe}")
             await update.message.reply_text(f"✅ Заяву одобрено та опубліковано в групі!")
         except Exception as e:
             logger.error(f"Помилка при обробці заяви: {e}")
@@ -665,6 +711,16 @@ async def process_neaktyv_approval_name(update: Update, context: ContextTypes.DE
                 text=admin_edit_message,
                 parse_mode="HTML"
             )
+            # Лог рішення в БД
+            try:
+                decide_neaktyv_request(
+                    request_id=0,  # заглушка, аналогічно
+                    status='rejected',
+                    moderator_name=name,
+                    moderator_user_id=update.effective_user.id,
+                )
+            except Exception as dbe:
+                logger.error(f"DB decide neaktyv reject failed: {dbe}")
             await update.message.reply_text(f"❌ Заяву відхилено.")
         except Exception as e:
             logger.error(f"Помилка при редагуванні повідомлення: {e}")
@@ -923,6 +979,19 @@ async def finalize_application(update: Update, context: ContextTypes.DEFAULT_TYP
         'image_urls': user_data['image_urls']
     }
 
+    # Лог заявки на доступ у БД
+    try:
+        insert_access_application(
+            user_id=user.id,
+            username=user.username,
+            in_game_name=user_data['name'],
+            npu_department=user_data['npu_department'],
+            rank=USER_APPLICATIONS[user_id].get('rank'),
+            images=user_data['image_urls'],
+        )
+    except Exception as dbe:
+        logger.error(f"DB insert access_application failed: {dbe}")
+
     # Відправляємо підтвердження користувачу
     await update.message.reply_text(
         "✅ Вашу заявку повністю отримано!\n\n"
@@ -1020,6 +1089,17 @@ async def approve_request(update: Update, context: ContextTypes.DEFAULT_TYPE, us
             f"📊 Ліміт використань: 1 раз\n\n"
             f"Користувачу надіслано персональне запрошення."
         )
+        # Лог рішення по заявці у БД
+        try:
+            decide_access_application(
+                user_id=user.id,
+                decision='approved',
+                decided_by_admin_id=update.effective_user.id,
+                decided_by_username=update.effective_user.username,
+                invite_link=invite_link,
+            )
+        except Exception as dbe:
+            logger.error(f"DB decide access approve failed: {dbe}")
         
         logger.info(f"Заявку користувача {user_display_name} ({user.id}) схвалено, створено посилання: {invite_link}")
         
@@ -1045,6 +1125,17 @@ async def approve_request(update: Update, context: ContextTypes.DEFAULT_TYPE, us
             )
         except Exception as e2:
             logger.error(f"Не вдалося відправити навіть основне посилання користувачу {user.id}: {e2}")
+        # Лог рішення по заявці у БД (approve без персонального інвайту)
+        try:
+            decide_access_application(
+                user_id=user.id,
+                decision='approved',
+                decided_by_admin_id=update.effective_user.id,
+                decided_by_username=update.effective_user.username,
+                invite_link=GROUP_INVITE_LINK,
+            )
+        except Exception as dbe:
+            logger.error(f"DB decide access approve(fallback) failed: {dbe}")
     
     # Видаляємо заявку зі списку очікування
     del PENDING_REQUESTS[user_id]
@@ -1079,6 +1170,17 @@ async def reject_request(update: Update, context: ContextTypes.DEFAULT_TYPE, use
         await query.edit_message_text(
             f"⚠️ Заявку відхилено, але не вдалося відправити повідомлення користувачу: {e}"
         )
+    # Лог рішення по заявці у БД
+    try:
+        decide_access_application(
+            user_id=user.id,
+            decision='rejected',
+            decided_by_admin_id=update.effective_user.id,
+            decided_by_username=update.effective_user.username,
+            invite_link=None,
+        )
+    except Exception as dbe:
+        logger.error(f"DB decide access reject failed: {dbe}")
     
     # Видаляємо заявку зі списку очікування
     del PENDING_REQUESTS[user_id]
@@ -1186,6 +1288,41 @@ async def me_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
     )
     await update.message.reply_text(text, parse_mode="HTML")
 
+async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Показати довідку по командам та діям бота."""
+    is_admin = update.effective_user.id in ADMIN_IDS
+    text = (
+        "ℹ️ <b>Довідка</b>\n\n"
+        "<b>Основні команди</b>:\n"
+        "• /start — запустити бота та показати меню\n"
+        "• /help — ця довідка\n"
+        "• /me — показати ваш збережений профіль\n"
+        "• /neaktyv — подати <i>заяву на неактив</i> (також є кнопка в меню)\n\n"
+        "<b>Заява на доступ у групу</b>:\n"
+        "1) Натисніть /start і дотримуйтесь інструкцій\n"
+        "2) Введіть <i>ім'я та прізвище українською</i> (повністю)\n"
+        "3) Оберіть <i>управління НПУ</i> і <i>своє звання</i> зі списку\n"
+        "4) Надішліть <i>2 посилання</i> на скріншоти (посвідчення і планшет) з imgbb/imgur/postimg\n\n"
+        "<blockquote>Порада: надсилайте <b>прямі URL</b> зображень, кожне з нового рядка.</blockquote>\n\n"
+    )
+    if is_admin:
+        text += (
+            "<b>Адмінські команди</b>:\n"
+            "• /admin — коротка статистика заяв\n"
+            "• /dogana — оформлення догани\n"
+            "• /user &lt;id|@username&gt; — показати профіль користувача\n"
+            "• /find &lt;текст&gt; — пошук профілів (username/ім'я TG/ім'я у грі)\n"
+            "• /broadcast_fill — надіслати інструкцію для заповнення профілів\n\n"
+        )
+    text += (
+        "<b>Модерація заяв на неактив</b> (адміни):\n"
+        "• У приват повідомлення приходить карточка з кнопками <b>Одобрити/Відхилити</b>\n"
+        "• Після кліку бот попросить <i>ім'я та прізвище модератора</i> для підпису\n"
+        "• Результат публікується у групі з атрибуцією <i>Перевіряючий</i>\n\n"
+        "<b>Формат імені</b>: лише українські літери, повне ім'я та прізвище.\n"
+    )
+    await update.message.reply_text(text, parse_mode="HTML", disable_web_page_preview=True)
+
 def main() -> None:
     """Запуск бота"""
     # Створюємо додаток
@@ -1196,6 +1333,7 @@ def main() -> None:
     # Додаємо обробники
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CommandHandler("me", me_command))
+    application.add_handler(CommandHandler("help", help_command))
     application.add_handler(CommandHandler("admin", admin_command))
     application.add_handler(CommandHandler("broadcast_fill", broadcast_fill_profiles))
     application.add_handler(CommandHandler("user", user_lookup_command))

@@ -59,6 +59,66 @@ def init_db():
             );
             """
         )
+        # Журнал доган (попереджень)
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS warnings (
+                id                    INTEGER PRIMARY KEY AUTOINCREMENT,
+                offense               TEXT,
+                date_text             TEXT,
+                to_whom               TEXT,
+                rank_to               TEXT,
+                by_whom               TEXT,
+                kind                  TEXT, -- 'Догана' або 'Попередження'
+                issued_by_user_id     INTEGER,
+                issued_by_username    TEXT,
+                created_at            TEXT DEFAULT (datetime('now')),
+                revoked_at            TEXT,
+                revoked_by_user_id    INTEGER,
+                revoked_by_name       TEXT,
+                revoke_reason         TEXT
+            );
+            """
+        )
+        # Журнал заяв на неактив
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS neaktyv_requests (
+                id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+                requester_id        INTEGER NOT NULL,
+                requester_username  TEXT,
+                to_whom             TEXT,
+                rank                TEXT,
+                duration            TEXT,
+                department          TEXT,
+                status              TEXT CHECK(status IN ('pending','approved','rejected')) DEFAULT 'pending',
+                moderator_name      TEXT,
+                moderator_user_id   INTEGER,
+                decided_at          TEXT,
+                created_at          TEXT DEFAULT (datetime('now'))
+            );
+            """
+        )
+        # Журнал заяв на доступ у групу та рішень по ним
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS access_applications (
+                id                    INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id               INTEGER NOT NULL,
+                username              TEXT,
+                in_game_name          TEXT,
+                npu_department        TEXT,
+                rank                  TEXT,
+                images                TEXT,
+                created_at            TEXT DEFAULT (datetime('now')),
+                decision              TEXT CHECK(decision IN ('pending','approved','rejected')) DEFAULT 'pending',
+                decided_at            TEXT,
+                decided_by_admin_id   INTEGER,
+                decided_by_username   TEXT,
+                invite_link           TEXT
+            );
+            """
+        )
 
 
 def upsert_profile(
@@ -203,3 +263,115 @@ def get_profile_images(telegram_id: int) -> list[str]:
             (telegram_id,),
         )
         return [r[0] for r in cur.fetchall()]
+
+
+# ======= Warnings (Догани) =======
+def insert_warning(
+    offense: str,
+    date_text: str,
+    to_whom: str,
+    rank_to: str | None,
+    by_whom: str,
+    kind: str,
+    issued_by_user_id: int | None,
+    issued_by_username: str | None,
+) -> int:
+    with get_conn() as conn:
+        cur = conn.execute(
+            """
+            INSERT INTO warnings (offense, date_text, to_whom, rank_to, by_whom, kind, issued_by_user_id, issued_by_username)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (offense, date_text, to_whom, rank_to, by_whom, kind, issued_by_user_id, issued_by_username),
+        )
+        return int(cur.lastrowid)
+
+
+def revoke_warning(warning_id: int, revoked_by_user_id: int, revoked_by_name: str, reason: str | None = None):
+    with get_conn() as conn:
+        conn.execute(
+            """
+            UPDATE warnings
+            SET revoked_at = datetime('now'), revoked_by_user_id = ?, revoked_by_name = ?, revoke_reason = ?
+            WHERE id = ?
+            """,
+            (revoked_by_user_id, revoked_by_name, reason, warning_id),
+        )
+
+
+# ======= Neaktyv =======
+def insert_neaktyv_request(
+    requester_id: int,
+    requester_username: str | None,
+    to_whom: str,
+    rank: str | None,
+    duration: str,
+    department: str,
+) -> int:
+    with get_conn() as conn:
+        cur = conn.execute(
+            """
+            INSERT INTO neaktyv_requests (requester_id, requester_username, to_whom, rank, duration, department)
+            VALUES (?, ?, ?, ?, ?, ?)
+            """,
+            (requester_id, requester_username, to_whom, rank, duration, department),
+        )
+        return int(cur.lastrowid)
+
+
+def decide_neaktyv_request(
+    request_id: int,
+    status: str,
+    moderator_name: str,
+    moderator_user_id: int,
+):
+    with get_conn() as conn:
+        conn.execute(
+            """
+            UPDATE neaktyv_requests
+            SET status = ?, moderator_name = ?, moderator_user_id = ?, decided_at = datetime('now')
+            WHERE id = ?
+            """,
+            (status, moderator_name, moderator_user_id, request_id),
+        )
+
+
+# ======= Access Applications =======
+def insert_access_application(
+    user_id: int,
+    username: str | None,
+    in_game_name: str | None,
+    npu_department: str | None,
+    rank: str | None,
+    images: list[str] | None,
+) -> int:
+    imgs = "\n".join(images or [])
+    with get_conn() as conn:
+        cur = conn.execute(
+            """
+            INSERT INTO access_applications (user_id, username, in_game_name, npu_department, rank, images)
+            VALUES (?, ?, ?, ?, ?, ?)
+            """,
+            (user_id, username, in_game_name, npu_department, rank, imgs),
+        )
+        return int(cur.lastrowid)
+
+
+def decide_access_application(
+    user_id: int,
+    decision: str,
+    decided_by_admin_id: int,
+    decided_by_username: str | None,
+    invite_link: str | None,
+):
+    with get_conn() as conn:
+        conn.execute(
+            """
+            UPDATE access_applications
+            SET decision = ?, decided_at = datetime('now'), decided_by_admin_id = ?, decided_by_username = ?, invite_link = ?
+            WHERE id = (
+                SELECT id FROM access_applications WHERE user_id = ? ORDER BY created_at DESC LIMIT 1
+            )
+            """,
+            (decision, decided_by_admin_id, decided_by_username, invite_link, user_id),
+        )
