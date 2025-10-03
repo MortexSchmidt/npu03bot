@@ -29,7 +29,7 @@ ADMIN_IDS_STR = os.getenv("ADMIN_IDS", "1648720935")
 ADMIN_IDS = [int(admin_id.strip()) for admin_id in ADMIN_IDS_STR.split(',')]
 
 GROUP_CHAT_ID = os.getenv("GROUP_CHAT_ID")  # ID групи для створення запрошень
-GROUP_INVITE_LINK = "https://t.me/+RItcaiRa-KU5ZThi"  # Основна ссылка (резервна)
+GROUP_INVITE_LINK = "https://t.me/+RItcaiRa-KU5ZThi"  # Основне посилання (резервне)
 
 # Додаткові налаштування для відправки в теми (forum topics)
 def _int_or_none(val: str | None):
@@ -139,12 +139,12 @@ async def create_invite_link(context: ContextTypes.DEFAULT_TYPE, user_name: str)
             logger.info(f"Створено одноразове посилання для {user_name}: {invite_link.invite_link}")
             return invite_link.invite_link
         else:
-            # Якщо немає ID групи, використовуємо основну ссылку
-            logger.warning("GROUP_CHAT_ID не налаштовано, використовуємо основну ссылку")
+            # Якщо немає ID групи, використовуємо основне посилання
+            logger.warning("GROUP_CHAT_ID не налаштовано, використовуємо основне посилання")
             return GROUP_INVITE_LINK
     except Exception as e:
         logger.error(f"Помилка при створенні посилання-запрошення: {e}")
-        # В разі помилки використовуємо основну ссылку
+        # В разі помилки використовуємо основне посилання
         return GROUP_INVITE_LINK
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -163,9 +163,9 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if user_is_member:
         # Показуємо меню взаємодії (кнопки під полем вводу)
         is_admin = user.id in ADMIN_IDS
-        keyboard_rows = [["📝 Заявка в АФК"]]
+        keyboard_rows = [["📝 Заява на неактив"]]
         if is_admin:
-            keyboard_rows.append(["⚠️ Виговор"])
+            keyboard_rows.append(["📝 Оформити догану"])
         reply_kb = ReplyKeyboardMarkup(keyboard_rows, resize_keyboard=True)
 
         text = (
@@ -188,64 +188,64 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         await update.message.reply_text(welcome_message, reply_markup=reply_markup)
 
 ############################
-# ВИГОВОРИ (адмінам)
+# ДОГАН (адміністраторам)
 ############################
 
-# Стані для діалогу 'виговор'
-WARN_OFFENSE, WARN_DATE, WARN_TO, WARN_BY, WARN_PUNISH = range(5)
+# Стани для діалогу 'догана'
+DOGANA_OFFENSE, DOGANA_DATE, DOGANA_TO, DOGANA_BY, DOGANA_PUNISH = range(5)
 
-async def warn_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+async def dogana_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     user = update.effective_user
     if user.id not in ADMIN_IDS:
         await update.message.reply_text("❌ У вас немає доступу до цієї дії.")
         return ConversationHandler.END
-    context.user_data["warn_form"] = {}
+    context.user_data["dogana_form"] = {}
     await update.message.reply_text("Введіть, будь ласка, опис порушення (Порушення):", reply_markup=ReplyKeyboardRemove())
-    return WARN_OFFENSE
+    return DOGANA_OFFENSE
 
-async def warn_offense(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    context.user_data["warn_form"]["offense"] = update.message.text.strip()
+async def dogana_offense(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    context.user_data["dogana_form"]["offense"] = update.message.text.strip()
     await update.message.reply_text("Вкажіть дату порушення (формат довільний):")
-    return WARN_DATE
+    return DOGANA_DATE
 
-async def warn_date(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    context.user_data["warn_form"]["date"] = update.message.text.strip()
+async def dogana_date(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    context.user_data["dogana_form"]["date"] = update.message.text.strip()
     await update.message.reply_text("Кому було видано покарання (ПІБ/нік/ID):")
-    return WARN_TO
+    return DOGANA_TO
 
-async def warn_to(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    context.user_data["warn_form"]["to_whom"] = update.message.text.strip()
+async def dogana_to(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    context.user_data["dogana_form"]["to_whom"] = update.message.text.strip()
     # Пропонуємо автозаповнення хто видав
     admin_name = f"{update.effective_user.first_name} {update.effective_user.last_name or ''}".strip()
     await update.message.reply_text(
         "Хто видав покарання (можете змінити або залишити як є):\n" f"За замовчуванням: {admin_name}"
     )
-    context.user_data["warn_form"]["default_by"] = admin_name
-    return WARN_BY
+    context.user_data["dogana_form"]["default_by"] = admin_name
+    return DOGANA_BY
 
-async def warn_by(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+async def dogana_by(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     text = update.message.text.strip()
-    by_whom = text if text and text.lower() != "за замовчуванням" else context.user_data["warn_form"].get("default_by")
-    context.user_data["warn_form"]["by_whom"] = by_whom
+    by_whom = text if text and text.lower() != "за замовчуванням" else context.user_data["dogana_form"].get("default_by")
+    context.user_data["dogana_form"]["by_whom"] = by_whom
 
     # Вибір покарання через inline кнопки
     kb = InlineKeyboardMarkup([
         [
-            InlineKeyboardButton("Догана", callback_data="warn_punish_dogana"),
-            InlineKeyboardButton("Попередження", callback_data="warn_punish_poperedzhennya"),
+            InlineKeyboardButton("Догана", callback_data="dogana_punish_dogana"),
+            InlineKeyboardButton("Попередження", callback_data="dogana_punish_poperedzhennya"),
         ]
     ])
     await update.message.reply_text("Оберіть вид покарання:", reply_markup=kb)
-    return WARN_PUNISH
+    return DOGANA_PUNISH
 
-async def warn_punish_selected(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+async def dogana_punish_selected(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     query = update.callback_query
     await query.answer()
     kind = "Догана" if query.data.endswith("dogana") else "Попередження"
-    form = context.user_data.get("warn_form", {})
+    form = context.user_data.get("dogana_form", {})
 
     text = (
-        "🔔 ВИГОВОР\n\n"
+        "� ДОГАНА\n\n"
         f"1. Порушення: {form.get('offense')}\n"
         f"2. Дата порушення: {form.get('date')}\n"
         f"3. Кому видано: {form.get('to_whom')}\n"
@@ -259,50 +259,50 @@ async def warn_punish_selected(update: Update, context: ContextTypes.DEFAULT_TYP
             message_thread_id=WARNINGS_TOPIC_ID,
             disable_web_page_preview=True,
         )
-        await query.edit_message_text("✅ Виговор оформлено та відправлено у тему.")
+        await query.edit_message_text("✅ Догану оформлено та відправлено у тему.")
     except Exception as e:
-        logger.error(f"Помилка відправки виговору: {e}")
+        logger.error(f"Помилка відправки догани: {e}")
         await query.edit_message_text("⚠️ Не вдалося відправити у тему. Перевірте права бота та ID теми.")
     finally:
-        context.user_data.pop("warn_form", None)
+        context.user_data.pop("dogana_form", None)
     return ConversationHandler.END
 
-async def warn_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    context.user_data.pop("warn_form", None)
+async def dogana_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    context.user_data.pop("dogana_form", None)
     await update.message.reply_text("Скасовано.", reply_markup=ReplyKeyboardRemove())
     return ConversationHandler.END
 
 ############################
-# ЗАЯВКИ В АФК (усі користувачі)
+# ЗАЯВИ НА НЕАКТИВ (усі користувачі)
 ############################
 
-AFK_TO, AFK_BY, AFK_TIME, AFK_DEPT = range(4)
+NEAKTYV_TO, NEAKTYV_BY, NEAKTYV_TIME, NEAKTYV_DEPT = range(4)
 
-async def afk_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    context.user_data["afk_form"] = {}
+async def neaktyv_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    context.user_data["neaktyv_form"] = {}
     await update.message.reply_text("Кому надається (ПІБ/нік/ID):", reply_markup=ReplyKeyboardRemove())
-    return AFK_TO
+    return NEAKTYV_TO
 
-async def afk_to(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    context.user_data["afk_form"]["to_whom"] = update.message.text.strip()
+async def neaktyv_to(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    context.user_data["neaktyv_form"]["to_whom"] = update.message.text.strip()
     await update.message.reply_text("Хто надав (ПІБ/нік/ID):")
-    return AFK_BY
+    return NEAKTYV_BY
 
-async def afk_by(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    context.user_data["afk_form"]["by_whom"] = update.message.text.strip()
+async def neaktyv_by(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    context.user_data["neaktyv_form"]["by_whom"] = update.message.text.strip()
     await update.message.reply_text("На скільки (час):")
-    return AFK_TIME
+    return NEAKTYV_TIME
 
-async def afk_time(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    context.user_data["afk_form"]["duration"] = update.message.text.strip()
+async def neaktyv_time(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    context.user_data["neaktyv_form"]["duration"] = update.message.text.strip()
     await update.message.reply_text("Підрозділ:")
-    return AFK_DEPT
+    return NEAKTYV_DEPT
 
-async def afk_dept(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    context.user_data["afk_form"]["department"] = update.message.text.strip()
-    form = context.user_data.get("afk_form", {})
+async def neaktyv_dept(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    context.user_data["neaktyv_form"]["department"] = update.message.text.strip()
+    form = context.user_data.get("neaktyv_form", {})
     text = (
-        "🟦 ЗАЯВКА В АФК\n\n"
+        "🟦 ЗАЯВА НА НЕАКТИВ\n\n"
         f"1. Кому надається: {form.get('to_whom')}\n"
         f"2. Хто надав: {form.get('by_whom')}\n"
         f"3. На скільки (час): {form.get('duration')}\n"
@@ -315,16 +315,16 @@ async def afk_dept(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
             message_thread_id=AFK_TOPIC_ID,
             disable_web_page_preview=True,
         )
-        await update.message.reply_text("✅ Заявку в АФК відправлено у тему.")
+        await update.message.reply_text("✅ Заяву на неактив відправлено у тему.")
     except Exception as e:
-        logger.error(f"Помилка відправки АФК: {e}")
+        logger.error(f"Помилка відправки заяви на неактив: {e}")
         await update.message.reply_text("⚠️ Не вдалося відправити у тему. Перевірте права бота та ID теми.")
     finally:
-        context.user_data.pop("afk_form", None)
+        context.user_data.pop("neaktyv_form", None)
     return ConversationHandler.END
 
-async def afk_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    context.user_data.pop("afk_form", None)
+async def neaktyv_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    context.user_data.pop("neaktyv_form", None)
     await update.message.reply_text("Скасовано.", reply_markup=ReplyKeyboardRemove())
     return ConversationHandler.END
 
@@ -718,37 +718,37 @@ def main() -> None:
     application.add_handler(CommandHandler("admin", admin_command))
 
     # Попередньо обробляємо вибір покарання (inline) до загального кнопкового хендлера
-    application.add_handler(CallbackQueryHandler(warn_punish_selected, pattern=r"^warn_punish_"))
+    application.add_handler(CallbackQueryHandler(dogana_punish_selected, pattern=r"^dogana_punish_"))
     application.add_handler(CallbackQueryHandler(button_handler))
 
-    # Діалоги: Виговор (адмінам)
-    warn_conv = ConversationHandler(
-        entry_points=[CommandHandler("warn", warn_start), MessageHandler(filters.Regex("^⚠️ Виговор$"), warn_start)],
+    # Діалоги: Догани (адміністраторам)
+    dogana_conv = ConversationHandler(
+        entry_points=[CommandHandler("dogana", dogana_start), MessageHandler(filters.Regex("^📝 Оформити догану$"), dogana_start)],
         states={
-            WARN_OFFENSE: [MessageHandler(filters.TEXT & ~filters.COMMAND, warn_offense)],
-            WARN_DATE: [MessageHandler(filters.TEXT & ~filters.COMMAND, warn_date)],
-            WARN_TO: [MessageHandler(filters.TEXT & ~filters.COMMAND, warn_to)],
-            WARN_BY: [MessageHandler(filters.TEXT & ~filters.COMMAND, warn_by)],
-            WARN_PUNISH: [CallbackQueryHandler(warn_punish_selected, pattern=r"^warn_punish_")],
+            DOGANA_OFFENSE: [MessageHandler(filters.TEXT & ~filters.COMMAND, dogana_offense)],
+            DOGANA_DATE: [MessageHandler(filters.TEXT & ~filters.COMMAND, dogana_date)],
+            DOGANA_TO: [MessageHandler(filters.TEXT & ~filters.COMMAND, dogana_to)],
+            DOGANA_BY: [MessageHandler(filters.TEXT & ~filters.COMMAND, dogana_by)],
+            DOGANA_PUNISH: [CallbackQueryHandler(dogana_punish_selected, pattern=r"^dogana_punish_")],
         },
-        fallbacks=[CommandHandler("cancel", warn_cancel)],
+        fallbacks=[CommandHandler("cancel", dogana_cancel)],
         allow_reentry=True,
     )
-    application.add_handler(warn_conv)
+    application.add_handler(dogana_conv)
 
-    # Діалоги: Заявка в АФК (всі)
-    afk_conv = ConversationHandler(
-        entry_points=[CommandHandler("afk", afk_start), MessageHandler(filters.Regex("^📝 Заявка в АФК$"), afk_start)],
+    # Діалоги: Заява на неактив (всі)
+    neaktyv_conv = ConversationHandler(
+        entry_points=[CommandHandler("neaktyv", neaktyv_start), MessageHandler(filters.Regex("^📝 Заява на неактив$"), neaktyv_start)],
         states={
-            AFK_TO: [MessageHandler(filters.TEXT & ~filters.COMMAND, afk_to)],
-            AFK_BY: [MessageHandler(filters.TEXT & ~filters.COMMAND, afk_by)],
-            AFK_TIME: [MessageHandler(filters.TEXT & ~filters.COMMAND, afk_time)],
-            AFK_DEPT: [MessageHandler(filters.TEXT & ~filters.COMMAND, afk_dept)],
+            NEAKTYV_TO: [MessageHandler(filters.TEXT & ~filters.COMMAND, neaktyv_to)],
+            NEAKTYV_BY: [MessageHandler(filters.TEXT & ~filters.COMMAND, neaktyv_by)],
+            NEAKTYV_TIME: [MessageHandler(filters.TEXT & ~filters.COMMAND, neaktyv_time)],
+            NEAKTYV_DEPT: [MessageHandler(filters.TEXT & ~filters.COMMAND, neaktyv_dept)],
         },
-        fallbacks=[CommandHandler("cancel", afk_cancel)],
+        fallbacks=[CommandHandler("cancel", neaktyv_cancel)],
         allow_reentry=True,
     )
-    application.add_handler(afk_conv)
+    application.add_handler(neaktyv_conv)
 
     # Існуючі текстові повідомлення анкети
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_application_text))
