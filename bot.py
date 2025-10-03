@@ -605,6 +605,28 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         )
         await update.message.reply_text(welcome_message, reply_markup=reply_markup, parse_mode="HTML")
 
+
+async def admin_help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Детальна довідка для адміністраторів (доступ лише адмінам)."""
+    if update.effective_user.id not in ADMIN_IDS:
+        await update.message.reply_text("❌ Немає доступу.")
+        return
+    text = (
+        "🛡️ <b>Адмін-довідка</b>\n\n"
+        "<b>Адмінські команди</b>:\n"
+        "• /admin — коротка статистика заяв\n"
+        "• /dogana — оформлення догани (5 кроків, збереження у БД)\n"
+        "• /user &lt;id|@username&gt; — показати профіль користувача\n"
+        "• /find &lt;текст&gt; — пошук профілів; з повідомлення додаються кнопки дій (kick/догана)\n"
+        "• /broadcast_fill — розсилка інструкції щодо заповнення профілю\n"
+        "• /logs [limit] [action=...] [actor_id=...] [actor=@...] [from=YYYY-MM-DD] [to=YYYY-MM-DD] — останні дії з фільтрами\n"
+        "• /antispam_top [days=7] [kind=message|callback] [limit=10] — топ за антиспам-подіями\n"
+        "• /export_csv &lt;table&gt; [days=N] — експорт таблиці у CSV (profiles, action_logs, warnings, ... )\n"
+        "• /log_stats [days=7] — сводка (дії за типами, антиспам підсумки)\n\n"
+        "<b>Модерація неактиву</b>: у приват приходять картки з кнопками; після рішення — публікація у темі з атрибуцією.\n"
+    )
+    await update.message.reply_text(text, parse_mode="HTML", disable_web_page_preview=True)
+
 ############################
 # ДОГАН (адміністраторам)
 ############################
@@ -2025,6 +2047,7 @@ def main() -> None:
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CommandHandler("me", me_command))
     application.add_handler(CommandHandler("help", help_command))
+    application.add_handler(CommandHandler("admin_help", admin_help_command))
     application.add_handler(CommandHandler("admin", admin_command))
     application.add_handler(CommandHandler("broadcast_fill", broadcast_fill_profiles))
     application.add_handler(CommandHandler("user", user_lookup_command))
