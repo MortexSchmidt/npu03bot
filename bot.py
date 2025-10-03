@@ -4,7 +4,6 @@ import re
 import time
 import traceback
 from collections import deque
-import requests
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, ReplyKeyboardMarkup, ReplyKeyboardRemove
 from telegram.ext import (
     Application,
@@ -330,52 +329,6 @@ def display_ranked_name(rank: str | None, name: str) -> str:
     """Повертає відформатоване ім'я з опціональним званням."""
     return f"{rank} {name}".strip() if rank else name
 
-def is_valid_image_url(url: str) -> bool:
-    """Перевіряє, чи є URL валідним посиланням на зображення"""
-    # Базова перевірка формату URL
-    url_pattern = re.compile(
-        r'^https?://'  # http:// або https://
-        r'(?:(?:[A-Z0-9](?:[A-Z0-9-]{0,61}[A-Z0-9])?\.)+[A-Z]{2,6}\.?|'  # домен
-        r'localhost|'  # localhost
-        r'\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})'  # IP
-        r'(?::\d+)?'  # опціональний порт
-        r'(?:/?|[/?]\S+)$', re.IGNORECASE)
-    
-    if not url_pattern.match(url):
-        return False
-    
-    # Перевіряємо розширення файлу
-    image_extensions = ('.jpg', '.jpeg', '.png', '.gif', '.bmp', '.webp')
-    if any(url.lower().endswith(ext) for ext in image_extensions):
-        return True
-    
-    # Перевіряємо популярні хостинги зображень
-    image_hosts = ['imgbb.com', 'imgur.com', 'postimg.cc', 'ibb.co', 'imageban.ru', 'radikal.ru']
-    if any(host in url.lower() for host in image_hosts):
-        return True
-    
-    # Додаткова перевірка через HTTP HEAD запит
-    try:
-        response = requests.head(url, timeout=5)
-        content_type = response.headers.get('content-type', '')
-        return content_type.startswith('image/')
-    except:
-        return False
-
-def validate_image_urls(urls: list) -> tuple:
-    """Валідує список URL зображень"""
-    valid_urls = []
-    invalid_urls = []
-    
-    for url in urls:
-        url = url.strip()
-        if is_valid_image_url(url):
-            valid_urls.append(url)
-        else:
-            invalid_urls.append(url)
-    
-    return valid_urls, invalid_urls
-
 # ===== Тимчасова команда для повторного заповнення профілю =====
 async def refill_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """Старт тимчасового майстра перезаповнення профілю для вже зареєстрованих."""
@@ -473,82 +426,109 @@ async def refill_select_rank(update: Update, context: ContextTypes.DEFAULT_TYPE)
 
     rank = NPU_RANKS[idx]
     context.user_data.setdefault("refill_form", {})["rank"] = rank
+    context.user_data["refill_images_received"] = []
     await query.edit_message_text(
         f"✅ Звання обрано: {rank}\n\n"
-        "🔸 Крок 4 з 4: Надішліть 2 посилання на скріншоти (посвідчення та трудову книжку).\n\n"
-        "Кожен URL з нового рядка. Підтримуються imgbb/imgur/postimg та ін.")
+        "🔸 Крок 4 з 4: Надішліть 2 фотографії (посвідчення та трудову книжку).\n\n"
+        "Надішліть фотографії прямо в чат (по одній за раз).")
     return REFILL_IMAGES
 
-async def refill_images(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    text = update.message.text.strip()
-    urls = [u.strip() for u in text.splitlines() if u.strip()]
-    if len(urls) < 2:
-        await update.message.reply_text(
-            "❌ Потрібно мінімум 2 посилання на зображення. Надішліть ще раз.")
-        return REFILL_IMAGES
-    valid, invalid = validate_image_urls(urls)
-    if invalid or len(valid) < 2:
-        bad = "\n".join(f"• {u}" for u in invalid) if invalid else ""
-        await update.message.reply_text(
-            ("❌ Деякі посилання некоректні:\n" + bad + "\n\n" if bad else "") +
-            "Надішліть 2+ валідних URL (imgbb/imgur/postimg).")
-        return REFILL_IMAGES
-
-    form = context.user_data.get("refill_form", {})
+async def refill_photo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Обработка фотографий для /refill"""
     user = update.effective_user
-
-    # Оновлюємо профіль та зображення в БД
-    try:
-        update_profile_fields(
-            user.id,
-            in_game_name=form.get("in_game_name"),
-            npu_department=form.get("npu_department"),
-            rank=form.get("rank"),
+    
+    # Проверяем что это фотография
+    if not update.message.photo:
+        await update.message.reply_text(
+            "❌ Будь ласка, надішліть фотографію (не файл)."
         )
-        replace_profile_images(user.id, valid)
-        # Логи оновлення профілю та дії
-        try:
-            log_profile_update(
-                user_id=user.id,
-                fields={
-                    "in_game_name": form.get("in_game_name"),
-                    "npu_department": form.get("npu_department"),
-                    "rank": form.get("rank"),
-                },
-                images_count=len(valid),
-                source="refill",
+        return REFILL_IMAGES
+    
+    # Получаем URL фотографии
+    photo = update.message.photo[-1]
+    try:
+        file = await context.bot.get_file(photo.file_id)
+        photo_url = f"https://api.telegram.org/file/bot{context.bot.token}/{file.file_path}"
+        
+        # Добавляем к списку полученных фото
+        if "refill_images_received" not in context.user_data:
+            context.user_data["refill_images_received"] = []
+        
+        context.user_data["refill_images_received"].append(photo_url)
+        images_count = len(context.user_data["refill_images_received"])
+        
+        if images_count < 2:
+            await update.message.reply_text(
+                f"✅ Фото {images_count}/2 отримано.\n\n"
+                "📸 Надішліть ще одне фото."
             )
-            log_action(
-                actor_id=user.id,
-                actor_username=update.effective_user.username if update.effective_user else None,
-                action="profile_refill",
-                target_user_id=user.id,
-                target_username=update.effective_user.username if update.effective_user else None,
-                details=f"images={len(valid)}",
+            return REFILL_IMAGES
+        else:
+            # Получили все фото, завершаем
+            form = context.user_data.get("refill_form", {})
+            valid = context.user_data["refill_images_received"]
+            
+            # Оновлюємо профіль та зображення в БД
+            try:
+                update_profile_fields(
+                    user.id,
+                    in_game_name=form.get("in_game_name"),
+                    npu_department=form.get("npu_department"),
+                    rank=form.get("rank"),
+                )
+                replace_profile_images(user.id, valid)
+                
+                # Логи оновлення профілю та дії
+                try:
+                    log_profile_update(
+                        user_id=user.id,
+                        fields={
+                            "in_game_name": form.get("in_game_name"),
+                            "npu_department": form.get("npu_department"),
+                            "rank": form.get("rank"),
+                        },
+                        images_count=len(valid),
+                        source="refill",
+                    )
+                    log_action(
+                        actor_id=user.id,
+                        actor_username=user.username,
+                        action="profile_refill",
+                        target_user_id=user.id,
+                        target_username=user.username,
+                        details=f"images={len(valid)}",
+                    )
+                except Exception:
+                    pass
+            except Exception as e:
+                logger.error(f"refill save failed: {e}")
+                await update.message.reply_text("⚠️ Сталася помилка при збереженні. Спробуйте ще раз пізніше.")
+                return ConversationHandler.END
+
+            # Підсумок
+            summary = (
+                "✅ <b>Профіль оновлено</b>\n\n"
+                "<blockquote>"
+                f"Ім'я у грі: {form.get('in_game_name')}\n"
+                f"Підрозділ: {form.get('npu_department')}\n"
+                f"Звання: {form.get('rank')}\n"
+                f"Фото: {len(valid)} зображення"
+                "</blockquote>\n\n"
+                "Дякуємо! Ця команда є <i>тимчасовою</i> і буде видалена після міграції."
             )
-        except Exception:
-            pass
+            await update.message.reply_text(summary, parse_mode="HTML", disable_web_page_preview=True)
+
+            # Очистка стану
+            context.user_data.pop("refill_form", None)
+            context.user_data.pop("refill_images_received", None)
+            return ConversationHandler.END
+    
     except Exception as e:
-        logger.error(f"refill save failed: {e}")
-        await update.message.reply_text("⚠️ Сталася помилка при збереженні. Спробуйте ще раз пізніше.")
-        return ConversationHandler.END
-
-    # Підсумок
-    summary = (
-        "✅ <b>Профіль оновлено</b>\n\n"
-        "<blockquote>"
-        f"Ім'я у грі: {form.get('in_game_name')}\n"
-        f"Підрозділ: {form.get('npu_department')}\n"
-        f"Звання: {form.get('rank')}\n"
-        f"Фото: {len(valid)} посилання"
-        "</blockquote>\n\n"
-        "Дякуємо! Ця команда є <i>тимчасовою</i> і буде видалена після міграції."
-    )
-    await update.message.reply_text(summary, parse_mode="HTML", disable_web_page_preview=True)
-
-    # Очистка стану
-    context.user_data.pop("refill_form", None)
-    return ConversationHandler.END
+        logger.error(f"Error processing refill photo: {e}")
+        await update.message.reply_text(
+            "❌ Помилка обробки фотографії. Спробуйте ще раз."
+        )
+        return REFILL_IMAGES
 
 async def create_invite_link(context: ContextTypes.DEFAULT_TYPE, user_name: str) -> str:
     """Створює одноразове посилання-запрошення для користувача"""
@@ -1842,11 +1822,12 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
                     pass
                 await query.edit_message_text(
                     f"✅ Звання обрано: {rank}\n\n"
-                    "📝 Крок 3: Надішліть посилання на скріншоти (2 шт)\n\n"
-                    "Потрібні: посвідчення та трудова книжка. Розмістіть на imgbb/imgur/postimg та надішліть прямі URL, кожен з нового рядка."
+                    "📝 Крок 3: Надішліть скріншоти (2 фото)\n\n"
+                    "Потрібні: посвідчення та трудова книжка. Надішліть фотографії прямо в чат (по одній за раз)."
                 )
-                context.user_data['step'] = 'waiting_image_urls'
-                USER_APPLICATIONS[user_id]['step'] = 'waiting_image_urls'
+                context.user_data['step'] = 'waiting_images'
+                context.user_data['images_received'] = []
+                USER_APPLICATIONS[user_id]['step'] = 'waiting_images'
     
     elif query.data.startswith("approve_"):
         user_id = int(query.data.split("_")[1])
@@ -1879,8 +1860,7 @@ async def handle_application_text(update: Update, context: ContextTypes.DEFAULT_
     
     if step == 'waiting_name':
         await handle_name_input(update, context)
-    elif step == 'waiting_image_urls':
-        await handle_image_urls_application(update, context)
+    # waiting_images обрабатывается в отдельном handler для фотографий
 
 async def handle_name_input(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Обробник введення імені та прізвища"""
@@ -1984,77 +1964,64 @@ async def select_npu_department(update: Update, context: ContextTypes.DEFAULT_TY
     )
     await query.edit_message_text(desc, reply_markup=InlineKeyboardMarkup(rank_buttons), parse_mode="HTML")
 
-async def handle_image_urls_application(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Обробник посилань на зображення для заявок"""
+async def handle_photo_application(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Обробник фотографій для заявок на доступ"""
     user = update.effective_user
     user_id = user.id
 
     # Перевіряємо чи користувач в процесі подачі заявки
     if not context.user_data.get('awaiting_application'):
+        return
+
+    # Перевіряємо чи користувач на етапі відправки фото
+    if context.user_data.get('step') != 'waiting_images':
+        return
+
+    # Перевіряємо чи користувач вже надіслав заявку
+    if user_id not in USER_APPLICATIONS:
         await update.message.reply_text(
             "❌ Будь ласка, спочатку введіть команду /start та почніть подачу заявки."
         )
         return
 
-    # Перевіряємо чи користувач вже надіслав текст
-    if user_id not in USER_APPLICATIONS:
+    # Отримуємо URL фотографії з Telegram
+    photo = update.message.photo[-1]  # Найбільше зображення
+    try:
+        file = await context.bot.get_file(photo.file_id)
+        photo_url = f"https://api.telegram.org/file/bot{context.bot.token}/{file.file_path}"
+        
+        # Додаємо фото до списку
+        if 'images_received' not in context.user_data:
+            context.user_data['images_received'] = []
+        
+        context.user_data['images_received'].append(photo_url)
+        images_count = len(context.user_data['images_received'])
+        
+        if images_count < 2:
+            await update.message.reply_text(
+                f"✅ Фото {images_count}/2 отримано.\n\n"
+                "📸 Надішліть ще одне фото (посвідчення або трудову книжку)."
+            )
+            return
+        else:
+            # Отримали всі 2 фото, завершуємо заявку
+            user_data = USER_APPLICATIONS[user_id]
+            user_data['image_urls'] = context.user_data['images_received']
+            
+            # Сохраняем изображения в БД
+            replace_profile_images(user_id, user_data['image_urls'])
+            
+            await update.message.reply_text(
+                "✅ Всі фото отримано! Обробляємо вашу заявку..."
+            )
+            
+            await finalize_application(update, context, user_id)
+            
+    except Exception as e:
+        logger.error(f"Error processing photo: {e}")
         await update.message.reply_text(
-            "❌ Будь ласка, спочатку введіть текст заявки.\n"
-            "Використайте команду /start для початку."
+            "❌ Помилка обробки фотографії. Спробуйте ще раз."
         )
-        return
-
-    user_data = USER_APPLICATIONS[user_id]
-    
-    # Перевіряємо чи очікуємо посилання на зображення
-    if user_data.get('step') != 'waiting_image_urls':
-        await update.message.reply_text(
-            "❌ Будь ласка, спочатку введіть текст заявки."
-        )
-        return
-
-    # Отримуємо текст повідомлення та розділяємо на рядки
-    message_text = update.message.text.strip()
-    urls = [url.strip() for url in message_text.split('\n') if url.strip()]
-    
-    if len(urls) < 2:
-        await update.message.reply_text(
-            "❌ Будь ласка, надішліть мінімум 2 посилання на зображення:\n"
-            "1. Скріншот посвідчення\n"
-            "2. Скріншот трудової книжки\n\n"
-            "Кожне посилання з нового рядка."
-        )
-        return
-    
-    # Валідуємо URL
-    valid_urls, invalid_urls = validate_image_urls(urls)
-    
-    if invalid_urls:
-        invalid_list = '\n'.join(f"• {url}" for url in invalid_urls)
-        await update.message.reply_text(
-            f"❌ Деякі посилання некоректні:\n\n{invalid_list}\n\n"
-            "Будь ласка, перевірте посилання та надішліть тільки валідні URL зображень.\n"
-            "Підтримуються: imgbb.com, imgur.com, postimg.cc та інші."
-        )
-        return
-    
-    if len(valid_urls) < 2:
-        await update.message.reply_text(
-            "❌ Потрібно мінімум 2 валідних посилання на зображення.\n"
-            "Будь ласка, завантажте скріншоти на imgbb.com або imgur.com та надішліть прямі посилання."
-        )
-        return
-
-    # Зберігаємо посилання
-    user_data['image_urls'] = valid_urls
-    # Сохраняем изображения в БД
-    replace_profile_images(user_id, valid_urls)
-    
-    await finalize_application(update, context, user_id)
-
-def get_image_info(url: str) -> str:
-    """Отримуємо інформацію про зображення для адміністратора"""
-    return f"🔗 Посилання: {url}"
 
 async def finalize_application(update: Update, context: ContextTypes.DEFAULT_TYPE, user_id: int) -> None:
     """Завершуємо обробку заявки"""
@@ -2110,7 +2077,7 @@ async def finalize_application(update: Update, context: ContextTypes.DEFAULT_TYP
         f"👤 Ім'я: {user_data['name']}\n"
         f"🎖️ Звання: {user_data.get('rank') or '—'}\n"
         f"🏛️ Підрозділ НПУ: {user_data.get('npu_department') or '—'}\n"
-        f"🔗 Посилання на зображення: {len(user_data['image_urls'])}\n\n"
+        f"� Фотографії: {len(user_data['image_urls'])}\n\n"
         "Очікуйте на розгляд адміністратором. "
         "Ви отримаєте повідомлення, коли заявку буде розглянуто."
     )
@@ -2136,7 +2103,7 @@ async def finalize_application(update: Update, context: ContextTypes.DEFAULT_TYP
         f"👤 Ім'я: {user_data['name']}\n"
         f"🎖️ Звання: {user_data.get('rank') or '—'}\n"
         f"🏛️ Підрозділ НПУ: {user_data.get('npu_department') or '—'}\n\n"
-        f"🔗 Зображення ({len(user_data['image_urls'])}):\n{images_list}"
+        f"🔗 Фотографії ({len(user_data['image_urls'])}):\n{images_list}"
     )
 
     for admin_id in ADMIN_IDS:
@@ -2472,7 +2439,7 @@ async def broadcast_fill_profiles(update: Update, context: ContextTypes.DEFAULT_
         "Для оновлення бази, просимо кожного заповнити дані через бота:\n\n"
         "1) Відкрийте діалог з ботом та натисніть /start\n"
         "2) Пройдіть анкету доступу: введіть ім'я та прізвище, оберіть управління НПУ, оберіть <b>своє звання</b>\n"
-    "3) Надішліть 2 посилання на скріншоти (посвідчення та трудову книжку) з imgbb/imgur/postimg (прямі URL)\n\n"
+        "3) Надішліть 2 фотографії прямо в чат (посвідчення та трудову книжку)\n\n"
         "Дякуємо за оперативність!"
     )
     await update.message.reply_text(text, parse_mode="HTML")
@@ -2664,8 +2631,8 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         "1) Натисніть /start і дотримуйтесь інструкцій\n"
         "2) Введіть <i>ім'я та прізвище українською</i> (повністю)\n"
         "3) Оберіть <i>управління НПУ</i> і <i>своє звання</i> зі списку\n"
-    "4) Надішліть <i>2 посилання</i> на скріншоти (посвідчення і трудову книжку) з imgbb/imgur/postimg\n\n"
-        "<blockquote>Порада: надсилайте <b>прямі URL</b> зображень, кожне з нового рядка.</blockquote>\n\n"
+    "4) Надішліть <i>2 фотографії</i> прямо в чат (посвідчення і трудову книжку)\n\n"
+        "<blockquote>Порада: надсилайте фотографії <b>по одній за раз</b>, кожну окремим повідомленням.</blockquote>\n\n"
     )
     if is_admin:
         text += (
@@ -2767,7 +2734,7 @@ def main() -> None:
             REFILL_NAME: [MessageHandler(filters.TEXT & ~filters.COMMAND, refill_name)],
             REFILL_NPU: [CallbackQueryHandler(refill_select_npu, pattern=r"^refill_npu_.+")],
             REFILL_RANK: [CallbackQueryHandler(refill_select_rank, pattern=r"^refill_rank_\d+")],
-            REFILL_IMAGES: [MessageHandler(filters.TEXT & ~filters.COMMAND, refill_images)],
+            REFILL_IMAGES: [MessageHandler(filters.PHOTO, refill_photo)],
         },
         fallbacks=[CommandHandler("cancel", neaktyv_cancel)],
         allow_reentry=True,
@@ -2796,6 +2763,9 @@ def main() -> None:
     application.add_handler(MessageHandler(filters.Regex(".*Адмін-команди.*"), open_admin_menu))
     application.add_handler(MessageHandler(filters.Regex(".*Звичайні команди.*"), open_user_menu))
 
+    # Обробник фотографій для заявок на доступ
+    application.add_handler(MessageHandler(filters.PHOTO, handle_photo_application))
+    
     # Існуючі текстові повідомлення анкети
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_application_text))
     
