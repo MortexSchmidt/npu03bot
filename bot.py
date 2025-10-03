@@ -15,7 +15,7 @@ from telegram.ext import (
     ConversationHandler,
     ApplicationHandlerStop,
 )
-from db import init_db, upsert_profile, update_profile_fields, get_profile
+from db import init_db, upsert_profile, update_profile_fields, get_profile, get_profile_images
 from db import replace_profile_images
 from db import (
     insert_warning,
@@ -1179,8 +1179,9 @@ async def promotion_workbook(update: Update, context: ContextTypes.DEFAULT_TYPE)
     photo = update.message.photo[-1]
     
     try:
+        file = await context.bot.get_file(photo.file_id)
         # Сохраняем URL изображения
-        context.user_data["promotion_form"]["workbook_image"] = f"https://api.telegram.org/file/bot{context.bot.token}/{photo.file_path}"
+        context.user_data["promotion_form"]["workbook_image"] = f"https://api.telegram.org/file/bot{context.bot.token}/{file.file_path}"
         
         await update.message.reply_text(
             "✅ Скриншот трудової книги прийнято.\n\n"
@@ -1209,8 +1210,9 @@ async def promotion_evidence(update: Update, context: ContextTypes.DEFAULT_TYPE)
     photo = update.message.photo[-1]
     
     try:
+        file = await context.bot.get_file(photo.file_id)
         # Сохраняем URL изображения
-        context.user_data["promotion_form"]["work_evidence_image"] = f"https://api.telegram.org/file/bot{context.bot.token}/{photo.file_path}"
+        context.user_data["promotion_form"]["work_evidence_image"] = f"https://api.telegram.org/file/bot{context.bot.token}/{file.file_path}"
         
         # Получаем все данные формы
         form = context.user_data.get("promotion_form", {})
@@ -2605,6 +2607,13 @@ async def me_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
     if not profile:
         await update.message.reply_text("ℹ️ Профіль ще не збережено. Натисніть /start і спробуйте знову.")
         return
+    
+    # Получаем изображения профиля
+    images = get_profile_images(user.id)
+    images_text = ""
+    if images:
+        images_text = "\n<b>Збережені фото:</b>\n" + "\n".join([f"• <a href='{url}'>Фото #{i+1}</a>" for i, url in enumerate(images)])
+
     text = (
         "👤 <b>Ваш профіль</b>\n\n"
         f"TG: @{profile['username'] or 'немає'}\n"
@@ -2613,8 +2622,9 @@ async def me_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
         f"Звання: {profile['rank'] or '—'}\n"
         f"Підрозділ: {profile['npu_department'] or '—'}\n"
         f"Роль: {profile['role'] or 'user'}\n"
+        f"{images_text}"
     )
-    await update.message.reply_text(text, parse_mode="HTML")
+    await update.message.reply_text(text, parse_mode="HTML", disable_web_page_preview=True)
 
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Показати довідку по командам та діям бота."""
