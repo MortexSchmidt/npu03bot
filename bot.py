@@ -337,37 +337,102 @@ async def dogana_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> i
 # ЗАЯВИ НА НЕАКТИВ (усі користувачі)
 ############################
 
-NEAKTYV_TO, NEAKTYV_BY, NEAKTYV_TIME, NEAKTYV_DEPT = range(4)
+NEAKTYV_TO, NEAKTYV_BY, NEAKTYV_TIME, NEAKTYV_DEPARTMENT = range(4)
 
 async def neaktyv_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     context.user_data["neaktyv_form"] = {}
-    await update.message.reply_text("Кому надається (ПІБ/нік/ID):", reply_markup=ReplyKeyboardRemove())
+    await update.message.reply_text(
+        "📝 ПОДАЧА ЗАЯВИ НА НЕАКТИВ\n\n"
+        "🔸 Крок 1 з 4: Отримувач\n\n"
+        "Введіть ім'я та прізвище особи, якій надається неактив:\n"
+        "(Українською мовою, повне ім'я та прізвище)",
+        reply_markup=ReplyKeyboardRemove()
+    )
     return NEAKTYV_TO
 
 async def neaktyv_to(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    context.user_data["neaktyv_form"]["to_whom"] = update.message.text.strip()
-    await update.message.reply_text("Хто надав (ПІБ/нік/ID):")
+    name = update.message.text.strip()
+    
+    # Валідація українського імені
+    if not re.match(r'^[А-ЯҐІЇЄЁ][а-яґіїєё\']*\s+[А-ЯҐІЇЄЁ][а-яґіїєё\']*$', name):
+        await update.message.reply_text(
+            "❌ Помилка введення!\n\n"
+            "Ім'я та прізвище повинні:\n"
+            "• Бути українською мовою\n"
+            "• Починатися з великих літер\n"
+            "• Містити лише літери українського алфавіту\n\n"
+            "Приклади правильного введення:\n"
+            "✅ Олексій Петренко\n"
+            "✅ Марія Коваленко\n"
+            "✅ Дмитро О'Коннор\n\n"
+            "Спробуйте ще раз:"
+        )
+        return NEAKTYV_TO
+    
+    context.user_data["neaktyv_form"]["to_whom"] = name
+    await update.message.reply_text(
+        "🔸 Крок 2 з 4: Видавець\n\n"
+        "Введіть ім'я та прізвище особи, що надає неактив:\n"
+        "(Українською мовою, повне ім'я та прізвище)"
+    )
     return NEAKTYV_BY
 
 async def neaktyv_by(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    context.user_data["neaktyv_form"]["by_whom"] = update.message.text.strip()
-    await update.message.reply_text("На скільки (час):")
+    name = update.message.text.strip()
+    
+    # Валідація українського імені
+    if not re.match(r'^[А-ЯҐІЇЄЁ][а-яґіїєё\']*\s+[А-ЯҐІЇЄЁ][а-яґіїєё\']*$', name):
+        await update.message.reply_text(
+            "❌ Помилка введення!\n\n"
+            "Ім'я та прізвище повинні:\n"
+            "• Бути українською мовою\n"
+            "• Починатися з великих літер\n"
+            "• Містити лише літери українського алфавіту\n\n"
+            "Приклади правильного введення:\n"
+            "✅ Олексій Петренко\n"
+            "✅ Марія Коваленко\n"
+            "✅ Дмитро О'Коннор\n\n"
+            "Спробуйте ще раз:"
+        )
+        return NEAKTYV_BY
+    
+    context.user_data["neaktyv_form"]["by_whom"] = name
+    await update.message.reply_text(
+        "🔸 Крок 3 з 4: Термін неактиву\n\n"
+        "Введіть термін неактиву:\n"
+        "(Наприклад: 2 тижні, 1 місяць, 3 дні)"
+    )
     return NEAKTYV_TIME
 
 async def neaktyv_time(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     context.user_data["neaktyv_form"]["duration"] = update.message.text.strip()
-    await update.message.reply_text("Підрозділ:")
-    return NEAKTYV_DEPT
+    await update.message.reply_text(
+        "🔸 Крок 4 з 4: Відділ\n\n"
+        "Оберіть відділ НПУ:",
+        reply_markup=ReplyKeyboardMarkup(
+            [[dept] for dept in NPU_DEPARTMENTS.keys()],
+            one_time_keyboard=True,
+            resize_keyboard=True
+        )
+    )
+    return NEAKTYV_DEPARTMENT
 
 async def neaktyv_dept(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     context.user_data["neaktyv_form"]["department"] = update.message.text.strip()
     form = context.user_data.get("neaktyv_form", {})
+    
+    # Формування повідомлення з атрибуцією автора
+    username = update.message.from_user.username
+    display_name = update.message.from_user.first_name
+    author = f"@{username}" if username else display_name
+    
     text = (
         "🟦 ЗАЯВА НА НЕАКТИВ\n\n"
         f"1. Кому надається: {form.get('to_whom')}\n"
         f"2. Хто надав: {form.get('by_whom')}\n"
         f"3. На скільки (час): {form.get('duration')}\n"
-        f"4. Підрозділ: {form.get('department')}"
+        f"4. Підрозділ: {form.get('department')}\n\n"
+        f"Від: {author}"
     )
     try:
         await context.bot.send_message(
@@ -804,7 +869,7 @@ def main() -> None:
             NEAKTYV_TO: [MessageHandler(filters.TEXT & ~filters.COMMAND, neaktyv_to)],
             NEAKTYV_BY: [MessageHandler(filters.TEXT & ~filters.COMMAND, neaktyv_by)],
             NEAKTYV_TIME: [MessageHandler(filters.TEXT & ~filters.COMMAND, neaktyv_time)],
-            NEAKTYV_DEPT: [MessageHandler(filters.TEXT & ~filters.COMMAND, neaktyv_dept)],
+            NEAKTYV_DEPARTMENT: [MessageHandler(filters.TEXT & ~filters.COMMAND, neaktyv_dept)],
         },
         fallbacks=[CommandHandler("cancel", neaktyv_cancel)],
         allow_reentry=True,
