@@ -13,6 +13,7 @@ from telegram.ext import (
     MessageHandler,
     filters,
     ConversationHandler,
+    ApplicationHandlerStop,
 )
 from db import init_db, upsert_profile, update_profile_fields, get_profile
 from db import replace_profile_images
@@ -124,14 +125,14 @@ def _should_warn(context: ContextTypes.DEFAULT_TYPE, user_id: int, cooldown: flo
         return True
     return False
 
-async def anti_spam_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> bool:
-    """Pre-handler для повідомлень: відсікає спам. Повертає True, якщо поглинув оновлення."""
+async def anti_spam_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Pre-handler для повідомлень: відсікає спам. Перериває подальшу обробку при ліміті."""
     if not update.effective_user:
-        return False
+        return
     user_id = update.effective_user.id
     # Не обмежуємо адміністраторів
     if user_id in ADMIN_IDS:
-        return False
+        return
     limited, retry = _rate_limited(context, user_id, "message")
     if limited:
         if _should_warn(context, user_id):
@@ -140,25 +141,26 @@ async def anti_spam_message(update: Update, context: ContextTypes.DEFAULT_TYPE) 
                     f"⏳ Занадто часто. Зачекайте приблизно {int(retry)+1} сек.")
             except Exception:
                 pass
-        return True  # не пропускаємо до інших хендлерів
-    return False
+        # Перериваємо подальшу обробку усіх хендлерів
+        raise ApplicationHandlerStop()
+    return
 
-async def anti_spam_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> bool:
-    """Pre-handler для кліків по кнопках: відсікає спам. Повертає True, якщо поглинув оновлення."""
+async def anti_spam_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Pre-handler для кліків по кнопках: відсікає спам. Перериває подальшу обробку при ліміті."""
     query = update.callback_query
     if not query or not query.from_user:
-        return False
+        return
     user_id = query.from_user.id
     if user_id in ADMIN_IDS:
-        return False
+        return
     limited, retry = _rate_limited(context, user_id, "callback")
     if limited:
         try:
             await query.answer(f"⏳ Повільніше, зачекайте ~{int(retry)+1} сек.", show_alert=False)
         except Exception:
             pass
-        return True
-    return False
+        raise ApplicationHandlerStop()
+    return
 
 # Підрозділи НПУ (UKRAINE GTA) з описами
 NPU_DEPARTMENTS = {
