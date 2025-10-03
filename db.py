@@ -176,6 +176,29 @@ def init_db():
             );
             """
         )
+        # Заявки на повышение
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS promotion_requests (
+                id                    INTEGER PRIMARY KEY AUTOINCREMENT,
+                requester_id          INTEGER NOT NULL,
+                requester_username    TEXT,
+                requester_name        TEXT,
+                current_rank          TEXT NOT NULL,
+                target_rank           TEXT NOT NULL,
+                workbook_image        TEXT NOT NULL,
+                work_evidence_image   TEXT NOT NULL,
+                status                TEXT CHECK(status IN ('pending','approved','rejected')) DEFAULT 'pending',
+                moderator_id          INTEGER,
+                moderator_username    TEXT,
+                moderator_rank        TEXT,
+                reject_reason         TEXT,
+                decided_at            TEXT,
+                created_at            TEXT DEFAULT (datetime('now')),
+                FOREIGN KEY(requester_id) REFERENCES profiles(telegram_id) ON DELETE CASCADE
+            );
+            """
+        )
 
 
 def upsert_profile(
@@ -648,3 +671,112 @@ def logs_stats(days: int = 7) -> dict[str, Any]:
         )
         stats["antispam_by_kind"] = [(r[0], r[1]) for r in cur.fetchall()]
     return stats
+
+
+def insert_promotion_request(
+    requester_id: int,
+    requester_username: str,
+    requester_name: str,
+    current_rank: str,
+    target_rank: str,
+    workbook_image: str,
+    work_evidence_image: str,
+) -> int:
+    """Создать заявку на повышение. Возвращает ID заявки."""
+    with get_conn() as conn:
+        cur = conn.execute(
+            """
+            INSERT INTO promotion_requests (
+                requester_id, requester_username, requester_name,
+                current_rank, target_rank, workbook_image, work_evidence_image
+            ) VALUES (?, ?, ?, ?, ?, ?, ?)
+            """,
+            (requester_id, requester_username, requester_name, 
+             current_rank, target_rank, workbook_image, work_evidence_image),
+        )
+        return cur.lastrowid
+
+
+def get_promotion_request(request_id: int) -> Optional[Dict[str, Any]]:
+    """Получить заявку на повышение по ID."""
+    with get_conn() as conn:
+        cur = conn.execute(
+            """
+            SELECT id, requester_id, requester_username, requester_name,
+                   current_rank, target_rank, workbook_image, work_evidence_image,
+                   status, moderator_id, moderator_username, moderator_rank,
+                   reject_reason, decided_at, created_at
+            FROM promotion_requests
+            WHERE id = ?
+            """,
+            (request_id,),
+        )
+        row = cur.fetchone()
+        if row:
+            return {
+                "id": row[0],
+                "requester_id": row[1],
+                "requester_username": row[2],
+                "requester_name": row[3],
+                "current_rank": row[4],
+                "target_rank": row[5],
+                "workbook_image": row[6],
+                "work_evidence_image": row[7],
+                "status": row[8],
+                "moderator_id": row[9],
+                "moderator_username": row[10],
+                "moderator_rank": row[11],
+                "reject_reason": row[12],
+                "decided_at": row[13],
+                "created_at": row[14],
+            }
+        return None
+
+
+def get_pending_promotion_requests() -> list:
+    """Получить все заявки на повышение ожидающие модерации."""
+    with get_conn() as conn:
+        cur = conn.execute(
+            """
+            SELECT id, requester_id, requester_username, requester_name,
+                   current_rank, target_rank, created_at
+            FROM promotion_requests
+            WHERE status = 'pending'
+            ORDER BY created_at ASC
+            """,
+        )
+        return [
+            {
+                "id": row[0],
+                "requester_id": row[1],
+                "requester_username": row[2],
+                "requester_name": row[3],
+                "current_rank": row[4],
+                "target_rank": row[5],
+                "created_at": row[6],
+            }
+            for row in cur.fetchall()
+        ]
+
+
+def decide_promotion_request(
+    request_id: int,
+    moderator_id: int,
+    moderator_username: str,
+    moderator_rank: str,
+    approved: bool,
+    reject_reason: str = None,
+) -> bool:
+    """Принять решение по заявке на повышение."""
+    status = "approved" if approved else "rejected"
+    with get_conn() as conn:
+        cur = conn.execute(
+            """
+            UPDATE promotion_requests
+            SET status = ?, moderator_id = ?, moderator_username = ?, 
+                moderator_rank = ?, reject_reason = ?, decided_at = datetime('now')
+            WHERE id = ? AND status = 'pending'
+            """,
+            (status, moderator_id, moderator_username, moderator_rank, reject_reason, request_id),
+        )
+        return cur.rowcount > 0
