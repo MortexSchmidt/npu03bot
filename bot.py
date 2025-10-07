@@ -1097,6 +1097,62 @@ async def handle_application_text(update: Update, context: ContextTypes.DEFAULT_
     # Логируем все входящие текстовые сообщения
     logger.info(f"handle_application_text: User {user_id} sent: '{message_text}'")
     
+    # Перевіряємо, чи це може бути список посилань (якщо є принаймні 2 рядки, що виглядають як URL)
+    lines = [line.strip() for line in message_text.split('\n') if line.strip()]
+    url_pattern = re.compile(r'^https?://')
+    url_lines = [line for line in lines if url_pattern.match(line)]
+    
+    # Якщо є 2 або більше посилань, обробляємо як посилання на зображення
+    if len(url_lines) >= 2:
+        # Перевіряємо, чи користувач вже в системі
+        if user_id not in USER_APPLICATIONS:
+            # Якщо користувач ще не починав процес, створюємо базовий запис
+            USER_APPLICATIONS[user_id] = {
+                'user': user,
+                'name': None,
+                'npu_department': None,
+                'image_urls': [],
+                'step': 'waiting_image_urls'
+            }
+        
+        # Оновлюємо крок на очікування зображень, якщо ще не встановлено
+        if USER_APPLICATIONS[user_id]['step'] != 'waiting_image_urls':
+            USER_APPLICATIONS[user_id]['step'] = 'waiting_image_urls'
+        
+        # Викликаємо обробку посилань
+        await handle_image_urls_application(update, context)
+        return
+    
+    # Перевіряємо, чи це може бути список посилань (якщо є принаймні 2 рядки, що виглядають як URL)
+    lines = [line.strip() for line in message_text.split('\n') if line.strip()]
+    url_pattern = re.compile(r'^https?://')
+    url_lines = [line for line in lines if url_pattern.match(line)]
+    
+    # Якщо є 2 або більше посилань, обробляємо як посилання на зображення
+    if len(url_lines) >= 2:
+        # Перевіряємо, чи користувач вже в системі
+        if user_id not in USER_APPLICATIONS:
+            # Якщо користувач ще не починав процес, створюємо базовий запис
+            USER_APPLICATIONS[user_id] = {
+                'user': user,
+                'name': None,
+                'npu_department': None,
+                'image_urls': [],
+                'step': 'waiting_image_urls'
+            }
+        
+        # Оновлюємо крок на очікування зображень, якщо ще не встановлено
+        if USER_APPLICATIONS[user_id]['step'] != 'waiting_image_urls':
+            USER_APPLICATIONS[user_id]['step'] = 'waiting_image_urls'
+        
+        # Встановлюємо, що користувач в процесі подачі заявки
+        context.user_data['awaiting_application'] = True
+        context.user_data['step'] = 'waiting_image_urls'
+        
+        # Викликаємо обробку посилань
+        await handle_image_urls_application(update, context)
+        return
+    
     # Якщо користувач не в процесі подачі заявки
     if not context.user_data.get('awaiting_application'):
         logger.info(f"User {user_id} not in application process, ignoring text: '{message_text}'")
@@ -1216,30 +1272,23 @@ async def handle_image_urls_application(update: Update, context: ContextTypes.DE
     user = update.effective_user
     user_id = user.id
 
-    # Перевіряємо чи користувач в процесі подачі заявки
-    if not context.user_data.get('awaiting_application'):
-        await update.message.reply_text(
-            "❌ Будь ласка, спочатку введіть команду /start та почніть подачу заявки."
-        )
-        return
-
     # Перевіряємо чи користувач вже надіслав текст
     if user_id not in USER_APPLICATIONS:
-        await update.message.reply_text(
-            "❌ Будь ласка, спочатку введіть текст заявки.\n"
-            "Використайте команду /start для початку."
-        )
-        return
-
+        # Якщо користувача немає в списку, створюємо базовий запис
+        USER_APPLICATIONS[user_id] = {
+            'user': user,
+            'name': None,
+            'npu_department': None,
+            'image_urls': [],
+            'step': 'waiting_image_urls'
+        }
+    
     user_data = USER_APPLICATIONS[user_id]
     
-    # Перевіряємо чи очікуємо посилання на зображення
+    # Оновлюємо крок, якщо ще не встановлений
     if user_data.get('step') != 'waiting_image_urls':
-        await update.message.reply_text(
-            "❌ Будь ласка, спочатку введіть текст заявки."
-        )
-        return
-
+        user_data['step'] = 'waiting_image_urls'
+    
     # Отримуємо текст повідомлення та розділяємо на рядки
     message_text = update.message.text.strip()
     urls = [url.strip() for url in message_text.split('\n') if url.strip()]
@@ -1266,8 +1315,26 @@ def get_image_info(url: str) -> str:
 
 async def finalize_application(update: Update, context: ContextTypes.DEFAULT_TYPE, user_id: int) -> None:
     """Завершуємо обробку заявки"""
+    # Перевіряємо, чи є користувач в списку
+    if user_id not in USER_APPLICATIONS:
+        await update.message.reply_text("❌ Помилка: дані заявки не знайдено. Спробуйте почати знову з /start")
+        return
+    
     user_data = USER_APPLICATIONS[user_id]
     user = user_data['user']
+    
+    # Якщо ім'я не вказане, намагаємося отримати з профілю або використовуємо ім'я з Telegram
+    if not user_data.get('name'):
+        profile = get_profile(user_id)
+        if profile and profile.get('in_game_name'):
+            user_data['name'] = profile['in_game_name']
+        else:
+            # Використовуємо ім'я з Telegram, якщо немає іншого варіанту
+            user_data['name'] = f"{user.first_name} {user.last_name or ''}".strip()
+    
+    # Якщо немає вибраного підрозділу, встановлюємо значення за замовчуванням
+    if not user_data.get('npu_department'):
+        user_data['npu_department'] = "Не вказано"
 
     # Створюємо заявку для обробки
     PENDING_REQUESTS[user_id] = {
@@ -1360,7 +1427,8 @@ async def finalize_application(update: Update, context: ContextTypes.DEFAULT_TYP
 
     # Очищуємо дані користувача
     context.user_data['awaiting_application'] = False
-    del USER_APPLICATIONS[user_id]
+    if user_id in USER_APPLICATIONS:
+        del USER_APPLICATIONS[user_id]
 
 async def approve_request(update: Update, context: ContextTypes.DEFAULT_TYPE, user_id: int) -> None:
     """Схвалення заявки"""
