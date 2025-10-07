@@ -1097,14 +1097,19 @@ async def handle_application_text(update: Update, context: ContextTypes.DEFAULT_
     
     # Логируем все входящие текстовые сообщения
     logger.info(f"handle_application_text: User {user_id} sent: '{message_text}'")
+    logger.info(f"handle_application_text: awaiting_application = {context.user_data.get('awaiting_application')}")
+    logger.info(f"handle_application_text: step = {context.user_data.get('step')}")
     
     # Перевіряємо, чи це може бути список посилань (якщо є принаймні 2 рядки, що виглядають як URL)
     lines = [line.strip() for line in message_text.split('\n') if line.strip()]
     url_pattern = re.compile(r'^https?://')
     url_lines = [line for line in lines if url_pattern.match(line)]
     
+    logger.info(f"handle_application_text: Found {len(url_lines)} URL lines out of {len(lines)} total lines")
+    
     # Якщо є 2 або більше посилань, обробляємо як посилання на зображення
     if len(url_lines) >= 2:
+        logger.info(f"handle_application_text: Processing as image URLs")
         # Перевіряємо, чи користувач вже в системі
         if user_id not in USER_APPLICATIONS:
             # Якщо користувач ще не починав процес, створюємо базовий запис
@@ -1115,32 +1120,7 @@ async def handle_application_text(update: Update, context: ContextTypes.DEFAULT_
                 'image_urls': [],
                 'step': 'waiting_image_urls'
             }
-        
-        # Оновлюємо крок на очікування зображень, якщо ще не встановлено
-        if USER_APPLICATIONS[user_id]['step'] != 'waiting_image_urls':
-            USER_APPLICATIONS[user_id]['step'] = 'waiting_image_urls'
-        
-        # Викликаємо обробку посилань
-        await handle_image_urls_application(update, context)
-        return
-    
-    # Перевіряємо, чи це може бути список посилань (якщо є принаймні 2 рядки, що виглядають як URL)
-    lines = [line.strip() for line in message_text.split('\n') if line.strip()]
-    url_pattern = re.compile(r'^https?://')
-    url_lines = [line for line in lines if url_pattern.match(line)]
-    
-    # Якщо є 2 або більше посилань, обробляємо як посилання на зображення
-    if len(url_lines) >= 2:
-        # Перевіряємо, чи користувач вже в системі
-        if user_id not in USER_APPLICATIONS:
-            # Якщо користувач ще не починав процес, створюємо базовий запис
-            USER_APPLICATIONS[user_id] = {
-                'user': user,
-                'name': None,
-                'npu_department': None,
-                'image_urls': [],
-                'step': 'waiting_image_urls'
-            }
+            logger.info(f"handle_application_text: Created new USER_APPLICATIONS entry for {user_id}")
         
         # Оновлюємо крок на очікування зображень, якщо ще не встановлено
         if USER_APPLICATIONS[user_id]['step'] != 'waiting_image_urls':
@@ -1151,6 +1131,7 @@ async def handle_application_text(update: Update, context: ContextTypes.DEFAULT_
         context.user_data['step'] = 'waiting_image_urls'
         
         # Викликаємо обробку посилань
+        logger.info(f"handle_application_text: Calling handle_image_urls_application")
         await handle_image_urls_application(update, context)
         return
     
@@ -1160,10 +1141,12 @@ async def handle_application_text(update: Update, context: ContextTypes.DEFAULT_
         return
     
     step = context.user_data.get('step', 'waiting_name')
+    logger.info(f"handle_application_text: Processing step = {step}")
     
     if step == 'waiting_name':
         await handle_name_input(update, context)
     elif step == 'waiting_image_urls':
+        logger.info(f"handle_application_text: Calling handle_image_urls_application for step waiting_image_urls")
         await handle_image_urls_application(update, context)
 
 async def handle_name_input(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -1273,9 +1256,13 @@ async def handle_image_urls_application(update: Update, context: ContextTypes.DE
     user = update.effective_user
     user_id = user.id
 
+    logger.info(f"handle_image_urls_application: User {user_id} entered function")
+    logger.info(f"handle_image_urls_application: USER_APPLICATIONS contains user: {user_id in USER_APPLICATIONS}")
+
     # Перевіряємо чи користувач вже надіслав текст
     if user_id not in USER_APPLICATIONS:
         # Якщо користувача немає в списку, створюємо базовий запис
+        logger.info(f"handle_image_urls_application: Creating new USER_APPLICATIONS entry for {user_id}")
         USER_APPLICATIONS[user_id] = {
             'user': user,
             'name': None,
@@ -1285,16 +1272,21 @@ async def handle_image_urls_application(update: Update, context: ContextTypes.DE
         }
     
     user_data = USER_APPLICATIONS[user_id]
+    logger.info(f"handle_image_urls_application: User data step = {user_data.get('step')}")
     
     # Оновлюємо крок, якщо ще не встановлений
     if user_data.get('step') != 'waiting_image_urls':
         user_data['step'] = 'waiting_image_urls'
+        logger.info(f"handle_image_urls_application: Updated step to waiting_image_urls")
     
     # Отримуємо текст повідомлення та розділяємо на рядки
     message_text = update.message.text.strip()
     urls = [url.strip() for url in message_text.split('\n') if url.strip()]
     
+    logger.info(f"handle_image_urls_application: Processing {len(urls)} URLs: {urls}")
+    
     if len(urls) < 2:
+        logger.info(f"handle_image_urls_application: Not enough URLs ({len(urls)}), asking for more")
         await update.message.reply_text(
             "❌ Будь ласка, надішліть мінімум 2 посилання на зображення:\n"
             "1. Скріншот посвідчення\n"
@@ -1304,10 +1296,12 @@ async def handle_image_urls_application(update: Update, context: ContextTypes.DE
         return
     
     # Зберігаємо посилання без валідації
+    logger.info(f"handle_image_urls_application: Saving URLs to user_data and database")
     user_data['image_urls'] = urls
     # Сохраняем изображения в БД
     replace_profile_images(user_id, urls)
     
+    logger.info(f"handle_image_urls_application: Calling finalize_application")
     await finalize_application(update, context, user_id)
 
 def get_image_info(url: str) -> str:
