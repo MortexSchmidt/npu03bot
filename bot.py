@@ -1077,6 +1077,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
                     "📝 Крок 3: Надішліть посилання на скріншоти (2 шт)\n\n"
                     "Потрібні: посвідчення та трудова книжка. Розмістіть на imgbb/imgur/postimg та надішліть прямі URL, кожен з нового рядка."
                 )
+                context.user_data['awaiting_application'] = True
                 context.user_data['step'] = 'waiting_image_urls'
                 USER_APPLICATIONS[user_id]['step'] = 'waiting_image_urls'
     
