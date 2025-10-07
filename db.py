@@ -72,31 +72,60 @@ def migrate_db():
             print("Migration completed: profile_images.url -> profile_images.file_id")
         
         # Проверяем промошн таблицу
-        cursor = conn.execute("PRAGMA table_info(promotion_requests)")
-        columns = [row[1] for row in cursor.fetchall()]
-        
-        if 'workbook_image_id' not in columns and 'workbook_image' in columns:
-            print("Migrating promotion_requests table...")
+        try:
+            cursor = conn.execute("PRAGMA table_info(promotion_requests)")
+            columns = [row[1] for row in cursor.fetchall()]
             
-            # Добавляем новые колонки
-            try:
-                conn.execute("ALTER TABLE promotion_requests ADD COLUMN workbook_image_id TEXT")
-                conn.execute("ALTER TABLE promotion_requests ADD COLUMN evidence_image_id TEXT")
+            if not columns:
+                print("promotion_requests table does not exist, skipping migration")
+            elif 'workbook_image_id' not in columns:
+                print("Migrating promotion_requests table...")
                 
-                # Копируем данные из старых колонок
-                conn.execute(
-                    """
-                    UPDATE promotion_requests 
-                    SET workbook_image_id = workbook_image, 
-                        evidence_image_id = evidence_image
-                    WHERE workbook_image IS NOT NULL OR evidence_image IS NOT NULL
-                    """
-                )
+                # Добавляем новые колонки
+                try:
+                    conn.execute("ALTER TABLE promotion_requests ADD COLUMN workbook_image_id TEXT")
+                    print("Added workbook_image_id column")
+                except sqlite3.OperationalError as e:
+                    if "duplicate column name" not in str(e):
+                        print(f"Error adding workbook_image_id: {e}")
                 
-                print("Migration completed: promotion_requests workbook_image/evidence_image -> *_id")
-            except sqlite3.OperationalError as e:
-                if "duplicate column name" not in str(e):
-                    raise
+                try:
+                    conn.execute("ALTER TABLE promotion_requests ADD COLUMN evidence_image_id TEXT")
+                    print("Added evidence_image_id column")
+                except sqlite3.OperationalError as e:
+                    if "duplicate column name" not in str(e):
+                        print(f"Error adding evidence_image_id: {e}")
+                    
+                # Копируем данные из старых колонок только если они существуют
+                if 'workbook_image' in columns:
+                    try:
+                        conn.execute(
+                            """
+                            UPDATE promotion_requests 
+                            SET workbook_image_id = workbook_image
+                            WHERE workbook_image IS NOT NULL
+                            """
+                        )
+                        print("Copied workbook_image data to workbook_image_id")
+                    except sqlite3.OperationalError as e:
+                        print(f"Error copying workbook_image data: {e}")
+                
+                if 'evidence_image' in columns:
+                    try:
+                        conn.execute(
+                            """
+                            UPDATE promotion_requests 
+                            SET evidence_image_id = evidence_image
+                            WHERE evidence_image IS NOT NULL
+                            """
+                        )
+                        print("Copied evidence_image data to evidence_image_id")
+                    except sqlite3.OperationalError as e:
+                        print(f"Error copying evidence_image data: {e}")
+                    
+                print("Migration completed: promotion_requests migration finished")
+        except sqlite3.OperationalError as e:
+            print(f"Error during promotion_requests migration: {e}")
 
 
 def init_db():
