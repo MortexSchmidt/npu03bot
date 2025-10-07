@@ -1924,11 +1924,31 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
 
 def main() -> None:
     """Запуск бота"""
-    # Створюємо додаток
-    application = Application.builder().token(BOT_TOKEN).build()
-    # Ініціалізуємо БД
-    init_db()
+    try:
+        logger.info("Starting bot initialization...")
+        
+        # Перевіряємо токен
+        if not BOT_TOKEN:
+            logger.error("BOT_TOKEN is not set!")
+            raise ValueError("Не знайдено змінну оточення BOT_TOKEN. Перевірте налаштування на хостингу.")
+        
+        logger.info(f"BOT_TOKEN loaded: {'*' * (len(BOT_TOKEN) - 4)}{BOT_TOKEN[-4:]}")
+        
+        # Створюємо додаток
+        logger.info("Creating Telegram application...")
+        application = Application.builder().token(BOT_TOKEN).build()
+        logger.info("Application created successfully")
+        
+        # Ініціалізуємо БД
+        logger.info("Initializing database...")
+        init_db()
+        logger.info("Database initialized successfully")
     
+    except Exception as e:
+        logger.error(f"Failed during bot initialization: {e}")
+        import traceback
+        traceback.print_exc()
+        raise
 
     # Додаємо обробники
     application.add_handler(CommandHandler("start", start))
@@ -2048,15 +2068,28 @@ def main() -> None:
     
     application.add_error_handler(error_handler)
     
+    logger.info("All handlers added successfully. Starting polling...")
+    
     # Запускаємо з обробкою конфліктів
     try:
+        logger.info("Starting bot polling...")
         application.run_polling(
             allowed_updates=Update.ALL_TYPES,
             drop_pending_updates=True  # Ігноруємо старі повідомлення
         )
+        logger.info("Bot polling started successfully!")
     except Exception as e:
         logger.error(f"Критична помилка при запуску: {e}")
+        import traceback
+        traceback.print_exc()
         raise
 
 if __name__ == '__main__':
-    main()
+    try:
+        logger.info("=== Bot startup initiated ===")
+        main()
+    except Exception as e:
+        logger.error(f"Bot startup failed: {e}")
+        import traceback
+        traceback.print_exc()
+        raise
