@@ -24,13 +24,11 @@ from db import (
     insert_access_application,
     decide_access_application,
 )
-from db import log_action, log_profile_update, log_antispam_event
+from db import log_action, log_profile_update
 from db import (
     log_action,
     log_profile_update,
-    log_antispam_event,
     query_action_logs,
-    query_antispam_top,
     export_table_csv,
     logs_stats,
     log_error,
@@ -80,108 +78,6 @@ USER_APPLICATIONS = {}  # Зберігання даних заявок кори�
 # Тимчасовий рефіл профілю (стани діалогу)
 REFILL_NAME, REFILL_NPU, REFILL_RANK, REFILL_IMAGES = range(4)
 
-# ===== Антиспам (тротлінг) =====
-# Налаштування лімітів (у секундах)
-RATE_LIMITS = {
-    "message": {"window": 5.0, "max": 5, "min_interval": 0.5},   # Не більше 5 повідомлень за 5с, інтервал >= 0.5с
-    "callback": {"window": 10.0, "max": 8, "min_interval": 0.4}, # Не більше 8 кліків за 10с, інтервал >= 0.4с
-}
-
-def _rl_storage(context: ContextTypes.DEFAULT_TYPE) -> dict:
-    return context.application.bot_data.setdefault("_rate_limits", {})
-
-def _rl_get_user_bucket(context: ContextTypes.DEFAULT_TYPE, user_id: int) -> dict:
-    storage = _rl_storage(context)
-    if user_id not in storage:
-        storage[user_id] = {
-            "message": deque(),
-            "callback": deque(),
-            "last_event_time": {"message": 0.0, "callback": 0.0},
-            "last_warn": 0.0,
-        }
-    return storage[user_id]
-
-def _rate_limited(context: ContextTypes.DEFAULT_TYPE, user_id: int, kind: str) -> tuple[bool, float]:
-    """Повертає (is_limited, retry_after_sec). Обрізає старі події; застосовує min_interval та вікно."""
-    now = time.time()
-    cfg = RATE_LIMITS[kind]
-    bucket = _rl_get_user_bucket(context, user_id)
-    dq: deque = bucket[kind]
-    # Видалити старі події поза вікном
-    window = cfg["window"]
-    while dq and (now - dq[0]) > window:
-        dq.popleft()
-    # Перевірка інтервалу між подіями
-    last_t = bucket["last_event_time"].get(kind, 0.0)
-    min_i = cfg["min_interval"]
-    if now - last_t < min_i:
-        retry = max(0.1, min_i - (now - last_t))
-        return True, retry
-    # Перевірка кількості у вікні
-    if len(dq) >= cfg["max"]:
-        # Коли мине ліміт?
-        retry = max(0.1, window - (now - dq[0]))
-        return True, retry
-    # Додаємо подію
-    dq.append(now)
-    bucket["last_event_time"][kind] = now
-    return False, 0.0
-
-def _should_warn(context: ContextTypes.DEFAULT_TYPE, user_id: int, cooldown: float = 10.0) -> bool:
-    now = time.time()
-    bucket = _rl_get_user_bucket(context, user_id)
-    if now - bucket.get("last_warn", 0.0) >= cooldown:
-        bucket["last_warn"] = now
-        return True
-    return False
-
-async def anti_spam_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Pre-handler для повідомлень: відсікає спам. Перериває подальшу обробку при ліміті."""
-    if not update.effective_user:
-        return
-    user_id = update.effective_user.id
-    # Не обмежуємо адміністраторів
-    if user_id in ADMIN_IDS:
-        return
-    limited, retry = _rate_limited(context, user_id, "message")
-    if limited:
-        # Лог події антиспаму (повідомлення)
-        try:
-            if update.effective_user:
-                log_antispam_event(update.effective_user.id, "message", retry_after=retry)
-        except Exception:
-            pass
-        if _should_warn(context, user_id):
-            try:
-                await update.effective_message.reply_text(
-                    f"⏳ Занадто часто. Зачекайте приблизно {int(retry)+1} сек.")
-            except Exception:
-                pass
-        # Перериваємо подальшу обробку усіх хендлерів
-        raise ApplicationHandlerStop()
-    return
-
-async def anti_spam_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Pre-handler для кліків по кнопках: відсікає спам. Перериває подальшу обробку при ліміті."""
-    query = update.callback_query
-    if not query or not query.from_user:
-        return
-    user_id = query.from_user.id
-    if user_id in ADMIN_IDS:
-        return
-    limited, retry = _rate_limited(context, user_id, "callback")
-    if limited:
-        # Лог події антиспаму (клік)
-        try:
-            log_antispam_event(user_id, "callback", retry_after=retry)
-        except Exception:
-            pass
-        try:
-            await query.answer(f"⏳ Повільніше, зачекайте ~{int(retry)+1} сек.", show_alert=False)
-        except Exception:
-            pass
-        raise ApplicationHandlerStop()
-    return
 
 # Підрозділи НПУ (UKRAINE GTA) з описами
 NPU_DEPARTMENTS = {
@@ -567,7 +463,6 @@ async def admin_help_command(update: Update, context: ContextTypes.DEFAULT_TYPE)
         "• /find &lt;текст&gt; — пошук профілів; з повідомлення додаються кнопки дій (kick/догана)\n"
         "• /broadcast_fill — розсилка інструкції щодо заповнення профілю\n"
         "• /logs [limit] [action=...] [actor_id=...] [actor=@...] [from=YYYY-MM-DD] [to=YYYY-MM-DD] — останні дії з фільтрами\n"
-        "• /antispam_top [days=7] [kind=message|callback] [limit=10] — топ за антиспам-подіями\n"
         "• /export_csv &lt;table&gt; [days=N] — експорт таблиці у CSV (profiles, action_logs, warnings, ... )\n"
         "• /log_stats [days=7] — сводка (дії за типами, антиспам підсумки)\n\n"
         "<b>Модерація неактиву</b>: у приват приходять картки з кнопками; після рішення — публікація у темі з атрибуцією.\n"
@@ -1699,32 +1594,6 @@ async def logs_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     text = "\n".join(lines[:1000])
     await update.message.reply_text(f"<b>Останні дії ({len(rows)}):</b>\n\n<code>{text}</code>", parse_mode="HTML", disable_web_page_preview=True)
 
-async def antispam_top_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Адм-команда: топ по антиспаму.\n
-    Использование: /antispam_top [days=7] [kind=message|callback] [limit=10]
-    """
-    if update.effective_user.id not in ADMIN_IDS:
-        await update.message.reply_text("❌ Немає доступу.")
-        return
-    days = 7
-    kind = None
-    limit = 10
-    for a in context.args or []:
-        if a.startswith("days="):
-            try: days = max(1, int(a.split("=",1)[1]));
-            except Exception: pass
-        elif a.startswith("kind="):
-            k = a.split("=",1)[1]
-            if k in ("message","callback"): kind = k
-        elif a.startswith("limit="):
-            try: limit = max(1, min(50, int(a.split("=",1)[1])));
-            except Exception: pass
-    rows = query_antispam_top(days=days, kind=kind, limit=limit)
-    if not rows:
-        await update.message.reply_text("За період порожньо.")
-        return
-    lines = [f"{i+1}. {r['user_id']} — {r['count']}" for i,r in enumerate(rows)]
-    await update.message.reply_text("<b>Топ антиспаму</b>\n"+"\n".join(lines), parse_mode="HTML")
 
 async def export_csv_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Адм-команда: експорта CSV.\n
@@ -1768,11 +1637,6 @@ async def log_stats_command(update: Update, context: ContextTypes.DEFAULT_TYPE) 
     parts.append("\nДії по типам:")
     for k,v in stats.get("actions_by_type", []):
         parts.append(f"• {k}: {v}")
-    parts.append(f"\nАнтиспам (всього): {stats.get('antispam_total', 0)}")
-    if stats.get("antispam_by_kind"):
-        parts.append("Антиспам по типам:")
-        for k,v in stats["antispam_by_kind"]:
-            parts.append(f"• {k}: {v}")
     await update.message.reply_text("\n".join(parts), parse_mode="HTML")
 
 async def broadcast_fill_profiles(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -2002,9 +1866,6 @@ def main() -> None:
     # Ініціалізуємо БД
     init_db()
     
-    # Pre-handlers: антиспам (найвищий пріоритет)
-    application.add_handler(MessageHandler(filters.ALL, anti_spam_message), group=-1)
-    application.add_handler(CallbackQueryHandler(anti_spam_callback, pattern=r".*"), group=-1)
 
     # Додаємо обробники
     application.add_handler(CommandHandler("start", start))
@@ -2119,7 +1980,6 @@ def main() -> None:
         except Exception:
             pass
     application.add_handler(CommandHandler("logs", logs_command))
-    application.add_handler(CommandHandler("antispam_top", antispam_top_command))
     application.add_handler(CommandHandler("export_csv", export_csv_command))
     application.add_handler(CommandHandler("log_stats", log_stats_command))
     
