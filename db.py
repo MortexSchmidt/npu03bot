@@ -33,8 +33,76 @@ def get_conn():
     finally:
         conn.close()
 
+def migrate_db():
+    """Выполняем миграции базы данных"""
+    with get_conn() as conn:
+        # Проверяем, существует ли колонка file_id в profile_images
+        cursor = conn.execute("PRAGMA table_info(profile_images)")
+        columns = [row[1] for row in cursor.fetchall()]
+        
+        if 'file_id' not in columns and 'url' in columns:
+            print("Migrating profile_images table from url to file_id...")
+            
+            # Создаем новую таблицу с правильной структурой
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS profile_images_new (
+                    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+                    telegram_id  INTEGER NOT NULL,
+                    file_id      TEXT NOT NULL,
+                    created_at   TEXT DEFAULT (datetime('now')),
+                    FOREIGN KEY(telegram_id) REFERENCES profiles(telegram_id) ON DELETE CASCADE
+                );
+                """
+            )
+            
+            # Копируем данные, используя URL как временный file_id
+            conn.execute(
+                """
+                INSERT INTO profile_images_new (telegram_id, file_id, created_at)
+                SELECT telegram_id, url, created_at FROM profile_images
+                WHERE url IS NOT NULL
+                """
+            )
+            
+            # Удаляем старую таблицу и переименовываем новую
+            conn.execute("DROP TABLE profile_images")
+            conn.execute("ALTER TABLE profile_images_new RENAME TO profile_images")
+            
+            print("Migration completed: profile_images.url -> profile_images.file_id")
+        
+        # Проверяем промошн таблицу
+        cursor = conn.execute("PRAGMA table_info(promotion_requests)")
+        columns = [row[1] for row in cursor.fetchall()]
+        
+        if 'workbook_image_id' not in columns and 'workbook_image' in columns:
+            print("Migrating promotion_requests table...")
+            
+            # Добавляем новые колонки
+            try:
+                conn.execute("ALTER TABLE promotion_requests ADD COLUMN workbook_image_id TEXT")
+                conn.execute("ALTER TABLE promotion_requests ADD COLUMN evidence_image_id TEXT")
+                
+                # Копируем данные из старых колонок
+                conn.execute(
+                    """
+                    UPDATE promotion_requests 
+                    SET workbook_image_id = workbook_image, 
+                        evidence_image_id = evidence_image
+                    WHERE workbook_image IS NOT NULL OR evidence_image IS NOT NULL
+                    """
+                )
+                
+                print("Migration completed: promotion_requests workbook_image/evidence_image -> *_id")
+            except sqlite3.OperationalError as e:
+                if "duplicate column name" not in str(e):
+                    raise
+
 
 def init_db():
+    # Сначала выполняем миграции
+    migrate_db()
+    
     with get_conn() as conn:
         conn.execute(
             """
